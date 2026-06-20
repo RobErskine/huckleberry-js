@@ -1,6 +1,6 @@
 {
   "name": "huckleberry-js",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Unofficial read-only TypeScript client for the Huckleberry baby-tracking app (Firebase). Runs on Cloudflare Workers, Node 18+, and browsers. Not affiliated with Huckleberry Labs.",
   "type": "module",
   "license": "MIT",
