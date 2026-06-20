@@ -1,0 +1,172 @@
+/**
+ * Namespaced API facades.
+ *
+ * These group the client's flat methods into resource objects so reads read
+ * naturally — `client.sleep.list(cid, range)` instead of
+ * `client.listSleepIntervals(cid, start, end)`. Each facade is a thin delegate
+ * over the existing methods on {@link HuckleberryClient}; the flat methods stay
+ * first-class, so this layer is purely additive.
+ *
+ * List methods take a {@link DateRange} (`{ start, end }`, `Date` or epoch
+ * seconds) and validate it, throwing {@link InvalidDateRangeError} on bad input
+ * so callers (and the MCP layer) get a structured, actionable error.
+ */
+
+import type { HuckleberryClient } from "./client.js";
+import { InvalidDateRangeError } from "./errors.js";
+import type {
+  DateRange,
+  FirebaseActivityIntervalData,
+  FirebaseChildDocument,
+  FirebaseDiaperData,
+  FirebaseDiaperDocumentData,
+  FirebaseFeedDocumentData,
+  FirebaseFeedIntervalData,
+  FirebaseGrowthData,
+  FirebaseHealthDocumentData,
+  FirebasePumpDocumentData,
+  FirebasePumpIntervalData,
+  FirebaseSleepDocumentData,
+  FirebaseSleepIntervalData,
+  FirebaseUserChildRef,
+  FirebaseUserDocument,
+  DashboardSummary,
+} from "./types.js";
+
+function toSeconds(v: Date | number): number {
+  return v instanceof Date ? v.getTime() / 1000 : v;
+}
+
+function isValidPoint(v: unknown): v is Date | number {
+  if (v instanceof Date) return !Number.isNaN(v.getTime());
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+/**
+ * Validate a {@link DateRange} and return its endpoints unchanged (still
+ * `Date | number`, to defer the seconds conversion to the flat methods).
+ */
+export function validateRange(range: DateRange): {
+  start: Date | number;
+  end: Date | number;
+} {
+  if (!range || typeof range !== "object") {
+    throw new InvalidDateRangeError("range must be an object { start, end }.");
+  }
+  const { start, end } = range;
+  if (!isValidPoint(start) || !isValidPoint(end)) {
+    throw new InvalidDateRangeError(
+      "range.start and range.end must each be a Date or a finite epoch number.",
+    );
+  }
+  if (toSeconds(start) >= toSeconds(end)) {
+    throw new InvalidDateRangeError("range.start must be before range.end.");
+  }
+  return { start, end };
+}
+
+export class UserNamespace {
+  constructor(private readonly c: HuckleberryClient) {}
+
+  get(): Promise<FirebaseUserDocument | null> {
+    return this.c.getUser();
+  }
+
+  getChild(cid: string): Promise<FirebaseChildDocument | null> {
+    return this.c.getChild(cid);
+  }
+
+  /** The account's children (from `users/{uid}.childList`). */
+  async listChildren(): Promise<FirebaseUserChildRef[]> {
+    const user = await this.c.getUser();
+    return user?.childList ?? [];
+  }
+}
+
+export class SleepNamespace {
+  constructor(private readonly c: HuckleberryClient) {}
+
+  get(cid: string): Promise<FirebaseSleepDocumentData | null> {
+    return this.c.getSleep(cid);
+  }
+
+  list(cid: string, range: DateRange): Promise<FirebaseSleepIntervalData[]> {
+    const { start, end } = validateRange(range);
+    return this.c.listSleepIntervals(cid, start, end);
+  }
+}
+
+export class FeedNamespace {
+  constructor(private readonly c: HuckleberryClient) {}
+
+  get(cid: string): Promise<FirebaseFeedDocumentData | null> {
+    return this.c.getFeed(cid);
+  }
+
+  list(cid: string, range: DateRange): Promise<FirebaseFeedIntervalData[]> {
+    const { start, end } = validateRange(range);
+    return this.c.listFeedIntervals(cid, start, end);
+  }
+}
+
+export class DiapersNamespace {
+  constructor(private readonly c: HuckleberryClient) {}
+
+  get(cid: string): Promise<FirebaseDiaperDocumentData | null> {
+    return this.c.getDiaper(cid);
+  }
+
+  list(cid: string, range: DateRange): Promise<FirebaseDiaperData[]> {
+    const { start, end } = validateRange(range);
+    return this.c.listDiaperIntervals(cid, start, end);
+  }
+}
+
+export class PumpNamespace {
+  constructor(private readonly c: HuckleberryClient) {}
+
+  get(cid: string): Promise<FirebasePumpDocumentData | null> {
+    return this.c.getPump(cid);
+  }
+
+  list(cid: string, range: DateRange): Promise<FirebasePumpIntervalData[]> {
+    const { start, end } = validateRange(range);
+    return this.c.listPumpIntervals(cid, start, end);
+  }
+}
+
+export class HealthNamespace {
+  constructor(private readonly c: HuckleberryClient) {}
+
+  get(cid: string): Promise<FirebaseHealthDocumentData | null> {
+    return this.c.getHealth(cid);
+  }
+
+  list(cid: string, range: DateRange): Promise<FirebaseGrowthData[]> {
+    const { start, end } = validateRange(range);
+    return this.c.listHealthIntervals(cid, start, end);
+  }
+
+  /** The most recent growth entry (weight/height/head), or null. */
+  async getLatestGrowth(cid: string): Promise<FirebaseGrowthData | null> {
+    const health = await this.c.getHealth(cid);
+    return health?.prefs?.lastGrowthEntry ?? null;
+  }
+}
+
+export class ActivitiesNamespace {
+  constructor(private readonly c: HuckleberryClient) {}
+
+  list(cid: string, range: DateRange): Promise<FirebaseActivityIntervalData[]> {
+    const { start, end } = validateRange(range);
+    return this.c.listActivityIntervals(cid, start, end);
+  }
+}
+
+export class DashboardNamespace {
+  constructor(private readonly c: HuckleberryClient) {}
+
+  summary(cid: string, childName: string | null = null): Promise<DashboardSummary> {
+    return this.c.getDashboardSummary(cid, childName);
+  }
+}

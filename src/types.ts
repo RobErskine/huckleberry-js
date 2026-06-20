@@ -11,6 +11,15 @@
  * are intentionally omitted in v1 — see `docs/write-roadmap.md`.
  */
 
+/**
+ * A time range for interval queries. `start`/`end` may be `Date` objects or
+ * epoch values (seconds). Used by the namespaced API (`client.sleep.list`, …).
+ */
+export interface DateRange {
+  start: Date | number;
+  end: Date | number;
+}
+
 export type DiaperMode = "pee" | "poo" | "both" | "dry";
 export type PooColor = "yellow" | "brown" | "black" | "green" | "red" | "gray";
 export type PooConsistency =

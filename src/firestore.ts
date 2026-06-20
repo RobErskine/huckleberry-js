@@ -11,6 +11,7 @@
  */
 
 import { FIRESTORE_BASE_URL } from "./const.js";
+import { HuckleberryError } from "./errors.js";
 
 export type FetchLike = typeof fetch;
 
@@ -37,14 +38,22 @@ export interface FirestoreDocument {
 }
 
 /** Error thrown when Firestore returns a non-2xx response. */
-export class FirestoreError extends Error {
+export class FirestoreError extends HuckleberryError {
   constructor(
     message: string,
     readonly status: number,
     readonly body: string,
   ) {
-    super(message);
-    this.name = "FirestoreError";
+    super(message, {
+      name: "FirestoreError",
+      // 5xx (and 429) are worth retrying; 4xx generally are not.
+      category: "api",
+      retryable: status >= 500 || status === 429,
+      recovery:
+        status === 401 || status === 403
+          ? "The ID token may be expired or lacks access — re-authenticate, then retry."
+          : "Retry shortly. If it persists, Huckleberry's backend may have changed.",
+    });
   }
 }
 

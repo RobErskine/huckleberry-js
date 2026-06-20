@@ -16,6 +16,16 @@ import {
   type FetchLike,
 } from "./firestore.js";
 import { FIRESTORE_BASE_URL } from "./const.js";
+import {
+  ActivitiesNamespace,
+  DashboardNamespace,
+  DiapersNamespace,
+  FeedNamespace,
+  HealthNamespace,
+  PumpNamespace,
+  SleepNamespace,
+  UserNamespace,
+} from "./namespaces.js";
 import type {
   DashboardSummary,
   FirebaseActivityIntervalData,
@@ -24,6 +34,7 @@ import type {
   FirebaseDiaperDocumentData,
   FirebaseFeedDocumentData,
   FirebaseFeedIntervalData,
+  FirebaseGrowthData,
   FirebaseHealthDocumentData,
   FirebasePumpDocumentData,
   FirebasePumpIntervalData,
@@ -72,6 +83,54 @@ export class HuckleberryClient {
       this.fetchImpl,
       opts.firestoreBaseUrl ?? FIRESTORE_BASE_URL,
     );
+  }
+
+  // -------------------------------------------------------------------------
+  // Namespaced API — ergonomic, resource-grouped accessors that delegate to the
+  // flat methods below. Additive: the flat methods remain fully supported.
+  //   client.sleep.list(cid, { start, end })  ≡  client.listSleepIntervals(...)
+  // -------------------------------------------------------------------------
+
+  private _user?: UserNamespace;
+  private _sleep?: SleepNamespace;
+  private _feed?: FeedNamespace;
+  private _diapers?: DiapersNamespace;
+  private _pump?: PumpNamespace;
+  private _health?: HealthNamespace;
+  private _activities?: ActivitiesNamespace;
+  private _dashboard?: DashboardNamespace;
+
+  /** User + child accessors (`get`, `getChild`, `listChildren`). */
+  get user(): UserNamespace {
+    return (this._user ??= new UserNamespace(this));
+  }
+  /** Sleep accessors (`get`, `list`). */
+  get sleep(): SleepNamespace {
+    return (this._sleep ??= new SleepNamespace(this));
+  }
+  /** Feed accessors (`get`, `list`). */
+  get feed(): FeedNamespace {
+    return (this._feed ??= new FeedNamespace(this));
+  }
+  /** Diaper accessors (`get`, `list`). */
+  get diapers(): DiapersNamespace {
+    return (this._diapers ??= new DiapersNamespace(this));
+  }
+  /** Pump accessors (`get`, `list`). */
+  get pump(): PumpNamespace {
+    return (this._pump ??= new PumpNamespace(this));
+  }
+  /** Health accessors (`get`, `list`, `getLatestGrowth`). */
+  get health(): HealthNamespace {
+    return (this._health ??= new HealthNamespace(this));
+  }
+  /** Activity accessors (`list`). */
+  get activities(): ActivitiesNamespace {
+    return (this._activities ??= new ActivitiesNamespace(this));
+  }
+  /** Dashboard rollup accessor (`summary`). */
+  get dashboard(): DashboardNamespace {
+    return (this._dashboard ??= new DashboardNamespace(this));
   }
 
   /** Sign in with Huckleberry email + password. Stores and returns the session. */
@@ -220,6 +279,20 @@ export class HuckleberryClient {
     return listIntervals<FirebaseActivityIntervalData>(
       this.fs,
       `activities/${cid}`,
+      "intervals",
+      toSeconds(start),
+      toSeconds(end),
+    );
+  }
+
+  async listHealthIntervals(
+    cid: string,
+    start: Date | number,
+    end: Date | number,
+  ): Promise<FirebaseGrowthData[]> {
+    return listIntervals<FirebaseGrowthData>(
+      this.fs,
+      `health/${cid}`,
       "intervals",
       toSeconds(start),
       toSeconds(end),

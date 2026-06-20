@@ -84,6 +84,36 @@ const sleeps = await client.listSleepIntervals(cid, since, new Date());
 
 `start` / `end` accept a `Date` or epoch **seconds**.
 
+### Namespaced API (optional, ergonomic)
+
+The same reads grouped by resource — handy when you'd rather not memorize the
+flat method names. These delegate to the methods above (both styles are fully
+supported), and list methods take a `{ start, end }` range:
+
+```ts
+const kids = await client.user.listChildren();
+const cid = kids[0].cid;
+
+const range = { start: new Date("2026-06-01"), end: new Date() };
+await client.sleep.list(cid, range);
+await client.feed.list(cid, range);     // breast, bottle, or solids
+await client.diapers.list(cid, range);
+await client.activities.list(cid, range);
+await client.pump.list(cid, range);
+await client.health.list(cid, range);
+await client.health.getLatestGrowth(cid);
+
+const summary = await client.dashboard.summary(cid);
+```
+
+### Errors
+
+Every error extends `HuckleberryError` and carries machine-readable fields —
+`category` (`auth` \| `not_found` \| `invalid_input` \| `api` \| `network`),
+`retryable`, and a human/LLM-actionable `recovery` hint (`err.toJSON()` returns
+that envelope). `AuthError` and `FirestoreError` keep their existing
+`status`/`body` shape, so prior `instanceof` checks still work.
+
 ## Reusing a session (serverless / edge)
 
 Authenticate once, persist the returned `Session` (the `refreshToken` + `uid`
@@ -136,6 +166,21 @@ Lower-level Firestore REST helpers (`FirestoreRest`, `decodeValue`,
 `buildStartRangeQuery`, …) and all Firebase types are also exported from the
 package root if you need to go beyond the high-level client.
 
+## MCP server
+
+Expose your Huckleberry data to Claude (and any MCP client) as read-only tools.
+Two transports ship with the package:
+
+- **Local (stdio)** — `npx -p huckleberry-js huckleberry-mcp`, runs on **Node**
+  (no Bun required). Best for Claude Desktop on your own machine.
+- **Remote (Cloudflare Workers)** — deploy `huckleberry-js/mcp/worker` to the
+  edge for an always-on, shareable endpoint. (A form Bun-only clients can't run.)
+
+The MCP SDK is an **optional peer dependency** — the core library stays
+zero-dependency; install `@modelcontextprotocol/sdk` only to run the stdio
+server. See **[`docs/mcp.md`](docs/mcp.md)** for setup, config, and the
+trade-offs between the two forms.
+
 ## Smoke test
 
 The single most important check — proves auth and a real Firestore REST read
@@ -161,6 +206,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full workflow and release steps
 
 ## Docs
 
+- [`docs/mcp.md`](docs/mcp.md) — MCP server: local (stdio) + remote (Workers) setup and trade-offs.
 - [`docs/firestore-schema.md`](docs/firestore-schema.md) — reverse-engineered collection/field map.
 - [`docs/write-roadmap.md`](docs/write-roadmap.md) — plan for write support & future work.
 

@@ -7,6 +7,29 @@
 export { HuckleberryClient } from "./client.js";
 export type { HuckleberryClientOptions } from "./client.js";
 
+export {
+  HuckleberryError,
+  ChildNotFoundError,
+  InvalidDateRangeError,
+  ApiError,
+} from "./errors.js";
+export type {
+  ErrorCategory,
+  StructuredErrorJSON,
+  HuckleberryErrorOptions,
+} from "./errors.js";
+
+export {
+  UserNamespace,
+  SleepNamespace,
+  FeedNamespace,
+  DiapersNamespace,
+  PumpNamespace,
+  HealthNamespace,
+  ActivitiesNamespace,
+  DashboardNamespace,
+} from "./namespaces.js";
+
 export { signIn, refresh, AuthError } from "./auth.js";
 export type { Session } from "./auth.js";
 

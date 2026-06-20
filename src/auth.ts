@@ -9,6 +9,7 @@
  */
 
 import { AUTH_URL, FIREBASE_API_KEY, REFRESH_URL } from "./const.js";
+import { HuckleberryError } from "./errors.js";
 import type { FetchLike } from "./firestore.js";
 
 /** An authenticated session. `expiresAt` is epoch milliseconds. */
@@ -19,14 +20,19 @@ export interface Session {
   expiresAt: number;
 }
 
-export class AuthError extends Error {
+export class AuthError extends HuckleberryError {
   constructor(
     message: string,
     readonly status: number,
     readonly body: string,
   ) {
-    super(message);
-    this.name = "AuthError";
+    super(message, {
+      name: "AuthError",
+      category: "auth",
+      retryable: false,
+      recovery:
+        "Check the Huckleberry email/password credentials (env HUCKLEBERRY_EMAIL / HUCKLEBERRY_PASSWORD) and try again.",
+    });
   }
 }
 
