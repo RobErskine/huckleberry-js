@@ -11,6 +11,7 @@ export {
   HuckleberryError,
   ChildNotFoundError,
   InvalidDateRangeError,
+  InvalidInputError,
   ApiError,
 } from "./errors.js";
 export type {
@@ -39,6 +40,11 @@ export {
   decodeValue,
   decodeFields,
   decodeDocument,
+  encodeValue,
+  encodeFields,
+  int,
+  IntValue,
+  DELETE_FIELD,
   buildStartRangeQuery,
   buildMultiQuery,
   listIntervals,
@@ -48,6 +54,7 @@ export type {
   FirestoreValue,
   FirestoreDocument,
   TokenProvider,
+  FieldUpdates,
 } from "./firestore.js";
 
 export {
