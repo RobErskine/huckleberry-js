@@ -12,8 +12,17 @@
  * so callers (and the MCP layer) get a structured, actionable error.
  */
 
-import type { HuckleberryClient } from "./client.js";
+import type {
+  HuckleberryClient,
+  LogActivityInput,
+  LogBottleInput,
+  LogDiaperInput,
+  LogGrowthInput,
+  LogPottyInput,
+  LogPumpInput,
+} from "./client.js";
 import { InvalidDateRangeError } from "./errors.js";
+import type { WriteOptions, WriteResult } from "./write.js";
 import type {
   DateRange,
   FirebaseActivityIntervalData,
@@ -107,6 +116,15 @@ export class FeedNamespace {
     const { start, end } = validateRange(range);
     return this.c.listFeedIntervals(cid, start, end);
   }
+
+  /** Log a bottle feed (writes a row + updates `prefs.lastBottle`). */
+  logBottle(
+    cid: string,
+    input: LogBottleInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    return this.c.logBottle(cid, input, opts);
+  }
 }
 
 export class DiapersNamespace {
@@ -120,6 +138,24 @@ export class DiapersNamespace {
     const { start, end } = validateRange(range);
     return this.c.listDiaperIntervals(cid, start, end);
   }
+
+  /** Log a diaper change (writes a row + updates `prefs.lastDiaper`). */
+  log(
+    cid: string,
+    input: LogDiaperInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    return this.c.logDiaper(cid, input, opts);
+  }
+
+  /** Log a potty event (writes a row + updates `prefs.lastPotty`). */
+  logPotty(
+    cid: string,
+    input: LogPottyInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    return this.c.logPotty(cid, input, opts);
+  }
 }
 
 export class PumpNamespace {
@@ -132,6 +168,15 @@ export class PumpNamespace {
   list(cid: string, range: DateRange): Promise<FirebasePumpIntervalData[]> {
     const { start, end } = validateRange(range);
     return this.c.listPumpIntervals(cid, start, end);
+  }
+
+  /** Log a pump session (writes a row + updates `prefs.lastPump`). */
+  log(
+    cid: string,
+    input: LogPumpInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    return this.c.logPump(cid, input, opts);
   }
 }
 
@@ -152,6 +197,15 @@ export class HealthNamespace {
     const health = await this.c.getHealth(cid);
     return health?.prefs?.lastGrowthEntry ?? null;
   }
+
+  /** Log a growth measurement (writes to `health/{cid}/data` + updates `prefs.lastGrowthEntry`). */
+  logGrowth(
+    cid: string,
+    input: LogGrowthInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    return this.c.logGrowth(cid, input, opts);
+  }
 }
 
 export class ActivitiesNamespace {
@@ -160,6 +214,15 @@ export class ActivitiesNamespace {
   list(cid: string, range: DateRange): Promise<FirebaseActivityIntervalData[]> {
     const { start, end } = validateRange(range);
     return this.c.listActivityIntervals(cid, start, end);
+  }
+
+  /** Log an activity (writes a row + updates the per-mode `prefs.last*`). */
+  log(
+    cid: string,
+    input: LogActivityInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    return this.c.logActivity(cid, input, opts);
   }
 }
 

@@ -244,6 +244,7 @@ export interface FirebaseDiaperData {
   mode: DiaperMode;
   start: number;
   offset: number;
+  lastUpdated?: number | null;
   quantity?: FirebaseDiaperQuantity | null;
   color?: PooColor | null;
   consistency?: PooConsistency | null;

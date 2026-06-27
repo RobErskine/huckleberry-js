@@ -73,3 +73,39 @@ export function shouldUpdateLast(
 ): boolean {
   return existingStart == null || newStart >= existingStart;
 }
+
+// --- plan / commit: every write builds a WritePlan, then commits it (unless
+// it's a dry run). This makes dry-run/preview free and keeps the writes for a
+// single logical action explicit and testable. ---
+
+/** A single document write: a full `set`, or a masked field `update`. */
+export interface PlannedWrite {
+  /** `set` creates/replaces the document; `update` merges only the listed (dotted) paths. */
+  op: "set" | "update";
+  path: string;
+  /** For `set`: the document fields. For `update`: dotted field updates (values may be `DELETE_FIELD`). */
+  data: Record<string, unknown>;
+}
+
+/** The ordered writes one logical write action performs (or previews, in a dry run). */
+export interface WritePlan {
+  /** Human-readable summary of the action (shown in dry-run previews). */
+  description: string;
+  writes: PlannedWrite[];
+}
+
+/** What every write method returns: the committed-or-previewed plan plus any created id. */
+export interface WriteResult {
+  /** True when this was a preview — no writes were performed. */
+  dryRun: boolean;
+  /** The id of the created history row, when the action creates one. */
+  id?: string;
+  /** The exact writes performed, or that a real run would perform. */
+  plan: WritePlan;
+}
+
+/** Options accepted by every write method. */
+export interface WriteOptions {
+  /** Preview only: compute and return the plan without writing anything. */
+  dryRun?: boolean;
+}

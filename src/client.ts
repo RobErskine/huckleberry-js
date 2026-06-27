@@ -15,7 +15,16 @@ import {
   listIntervals,
   type FetchLike,
 } from "./firestore.js";
-import { tzOffsetMinutes } from "./write.js";
+import {
+  intervalId,
+  shouldUpdateLast,
+  tzOffsetMinutes,
+  type PlannedWrite,
+  type WriteOptions,
+  type WritePlan,
+  type WriteResult,
+} from "./write.js";
+import { InvalidInputError } from "./errors.js";
 import { FIRESTORE_BASE_URL } from "./const.js";
 import {
   ActivitiesNamespace,
@@ -29,6 +38,14 @@ import {
 } from "./namespaces.js";
 import type {
   DashboardSummary,
+  ActivityMode,
+  BottleType,
+  DiaperMode,
+  PooColor,
+  PooConsistency,
+  PottyResult,
+  PumpEntryMode,
+  VolumeUnits,
   FirebaseActivityIntervalData,
   FirebaseChildDocument,
   FirebaseDiaperData,
@@ -70,6 +87,89 @@ export interface HuckleberryClientOptions {
 function toSeconds(d: Date | number): number {
   return d instanceof Date ? d.getTime() / 1000 : d;
 }
+
+/** Relative amount for a diaper's pee/poo (maps to 0 / 50 / 100). */
+export type DiaperAmount = "little" | "medium" | "big";
+
+/** Input for {@link HuckleberryClient.logDiaper}. */
+export interface LogDiaperInput {
+  mode: DiaperMode;
+  /** When it happened — `Date` or epoch seconds. Defaults to now. */
+  start?: Date | number;
+  peeAmount?: DiaperAmount;
+  pooAmount?: DiaperAmount;
+  color?: PooColor;
+  consistency?: PooConsistency;
+  diaperRash?: boolean;
+  notes?: string;
+}
+
+/** Input for {@link HuckleberryClient.logPotty} (a diaper event with no `diaperRash`). */
+export interface LogPottyInput extends Omit<LogDiaperInput, "diaperRash"> {
+  howItHappened: PottyResult;
+}
+
+const DIAPER_AMOUNTS: Record<DiaperAmount, number> = {
+  little: 0,
+  medium: 50,
+  big: 100,
+};
+
+/** Input for {@link HuckleberryClient.logBottle}. */
+export interface LogBottleInput {
+  amount: number;
+  /** When it happened — `Date` or epoch seconds. Defaults to now. */
+  start?: Date | number;
+  /** Defaults to `"Formula"`. */
+  bottleType?: BottleType;
+  /** Defaults to `"ml"`. */
+  units?: VolumeUnits;
+}
+
+/** Input for {@link HuckleberryClient.logGrowth} (at least one measurement required). */
+export interface LogGrowthInput {
+  start?: Date | number;
+  weight?: number;
+  height?: number;
+  head?: number;
+  /** Unit system; defaults to `"metric"`. */
+  units?: "metric" | "imperial";
+}
+
+/**
+ * Input for {@link HuckleberryClient.logPump}. Provide either `totalAmount`
+ * (split evenly across both sides) or both `leftAmount` and `rightAmount`.
+ */
+export interface LogPumpInput {
+  start?: Date | number;
+  duration?: number;
+  leftAmount?: number;
+  rightAmount?: number;
+  totalAmount?: number;
+  /** Defaults to `"ml"`. */
+  units?: VolumeUnits;
+  notes?: string;
+}
+
+/** Input for {@link HuckleberryClient.logActivity}. */
+export interface LogActivityInput {
+  mode: ActivityMode;
+  start?: Date | number;
+  duration?: number;
+  notes?: string;
+}
+
+/** Maps an activity mode to its `prefs.last*` summary field. */
+const ACTIVITY_LAST_FIELD: Record<ActivityMode, string> = {
+  bath: "lastBath",
+  tummyTime: "lastTummyTime",
+  storyTime: "lastStoryTime",
+  screenTime: "lastScreenTime",
+  skinToSkin: "lastSkinToSkin",
+  outdoorPlay: "lastOutdoorPlay",
+  indoorPlay: "lastIndoorPlay",
+  brushTeeth: "lastBrushTeeth",
+};
 
 export class HuckleberryClient {
   private session: Session | null;
@@ -216,6 +316,405 @@ export class HuckleberryClient {
   /** The timezone `offset` (minutes, negative for UTC+) to stamp on a row at `date`. */
   async offsetMinutes(date: Date = new Date()): Promise<number> {
     return tzOffsetMinutes(await this.resolveTimezone(), date);
+  }
+
+  /** Execute a plan's writes in order (interval row first, then prefs). */
+  private async commit(plan: WritePlan): Promise<void> {
+    for (const w of plan.writes) {
+      if (w.op === "set") await this.fs.setDoc(w.path, w.data);
+      else await this.fs.updateFields(w.path, w.data);
+    }
+  }
+
+  /** Commit a plan (unless `dryRun`) and return the uniform write result. */
+  private async runPlan(
+    plan: WritePlan,
+    id: string | undefined,
+    opts: WriteOptions | undefined,
+  ): Promise<WriteResult> {
+    const dryRun = opts?.dryRun ?? false;
+    if (!dryRun) await this.commit(plan);
+    return { dryRun, id, plan };
+  }
+
+  /**
+   * Build the `prefs.last*` merge-update common to every log method: the given
+   * prefs subfields (keyed without the `prefs.` prefix) plus the standard
+   * `prefs.timestamp` / `prefs.local_timestamp` stamps.
+   */
+  private prefUpdate(
+    parentPath: string,
+    prefs: Record<string, unknown>,
+    nowSec: number,
+  ): PlannedWrite {
+    const data: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(prefs)) data[`prefs.${k}`] = v;
+    data["prefs.timestamp"] = { seconds: nowSec };
+    data["prefs.local_timestamp"] = nowSec;
+    return { op: "update", path: parentPath, data };
+  }
+
+  // -------------------------------------------------------------------------
+  // Diaper writes
+  // -------------------------------------------------------------------------
+
+  /**
+   * Log a diaper change: writes a row to `diaper/{cid}/intervals` and updates
+   * `prefs.lastDiaper` (unless an existing summary is newer). Pass
+   * `{ dryRun: true }` to preview the writes without performing them.
+   */
+  async logDiaper(
+    cid: string,
+    input: LogDiaperInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    return this.logDiaperOrPotty(cid, "lastDiaper", input, opts);
+  }
+
+  /** Log a potty event: like {@link logDiaper} but updates `prefs.lastPotty`. */
+  async logPotty(
+    cid: string,
+    input: LogPottyInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    return this.logDiaperOrPotty(cid, "lastPotty", input, opts);
+  }
+
+  private async logDiaperOrPotty(
+    cid: string,
+    prefField: "lastDiaper" | "lastPotty",
+    input: LogDiaperInput & { howItHappened?: PottyResult },
+    opts: WriteOptions | undefined,
+  ): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    if (!input?.mode) {
+      throw new InvalidInputError("mode is required (pee | poo | both | dry).");
+    }
+    const isPotty = prefField === "lastPotty";
+    const start = toSeconds(input.start ?? new Date());
+    const nowMs = Date.now();
+    const nowSec = nowMs / 1000;
+    const offset = await this.offsetMinutes();
+
+    // Interval row — minimal fields by default, matching the app.
+    const row: Record<string, unknown> = {
+      mode: input.mode,
+      start,
+      lastUpdated: nowSec,
+      offset,
+    };
+    const quantity: Record<string, number> = {};
+    if (input.peeAmount) quantity.pee = DIAPER_AMOUNTS[input.peeAmount];
+    if (input.pooAmount) quantity.poo = DIAPER_AMOUNTS[input.pooAmount];
+    if (Object.keys(quantity).length) row.quantity = quantity;
+    if (input.color) row.color = input.color;
+    if (input.consistency) row.consistency = input.consistency;
+    if (input.diaperRash && !isPotty) row.diaperRash = true;
+    if (input.notes) row.notes = input.notes;
+    if (isPotty) {
+      row.isPotty = true;
+      if (input.howItHappened) row.howItHappened = input.howItHappened;
+    }
+
+    // Only refresh prefs.last* when this event is at least as recent.
+    const parent = await this.getDiaper(cid);
+    const existingStart = parent?.prefs?.[prefField]?.start ?? null;
+
+    const id = intervalId(nowMs);
+    const writes: WritePlan["writes"] = [
+      { op: "set", path: `diaper/${cid}/intervals/${id}`, data: row },
+    ];
+    if (shouldUpdateLast(existingStart, start)) {
+      writes.push(
+        this.prefUpdate(
+          `diaper/${cid}`,
+          { [prefField]: { start, mode: input.mode, offset } },
+          nowSec,
+        ),
+      );
+    }
+
+    const plan: WritePlan = {
+      description: `${isPotty ? "Log potty" : "Log diaper"} (${input.mode}) for child ${cid}`,
+      writes,
+    };
+    return this.runPlan(plan, id, opts);
+  }
+
+  // -------------------------------------------------------------------------
+  // Bottle / growth / pump / activity writes (single-shot history events)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Log a bottle feed: writes a row to `feed/{cid}/intervals` and updates
+   * `prefs.lastBottle` (+ the document-level bottle prefs) unless an existing
+   * summary is newer. The interval row uses `amount`/`units`; the summary uses
+   * `bottleAmount`/`bottleUnits`.
+   */
+  async logBottle(
+    cid: string,
+    input: LogBottleInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    if (typeof input?.amount !== "number" || !Number.isFinite(input.amount)) {
+      throw new InvalidInputError("amount is required (a finite number).");
+    }
+    const bottleType = input.bottleType ?? "Formula";
+    const units = input.units ?? "ml";
+    const start = toSeconds(input.start ?? new Date());
+    const nowMs = Date.now();
+    const nowSec = nowMs / 1000;
+    const offset = await this.offsetMinutes();
+
+    const row = {
+      mode: "bottle",
+      start,
+      lastUpdated: nowSec,
+      bottleType,
+      amount: input.amount,
+      units,
+      offset,
+      end_offset: offset,
+    };
+    const existingStart = (await this.getFeed(cid))?.prefs?.lastBottle?.start ?? null;
+
+    const id = intervalId(nowMs);
+    const writes: PlannedWrite[] = [
+      { op: "set", path: `feed/${cid}/intervals/${id}`, data: row },
+    ];
+    if (shouldUpdateLast(existingStart, start)) {
+      writes.push(
+        this.prefUpdate(
+          `feed/${cid}`,
+          {
+            lastBottle: {
+              mode: "bottle",
+              start,
+              bottleType,
+              bottleAmount: input.amount,
+              bottleUnits: units,
+              offset,
+            },
+            bottleType,
+            bottleAmount: input.amount,
+            bottleUnits: units,
+          },
+          nowSec,
+        ),
+      );
+    }
+    return this.runPlan(
+      {
+        description: `Log bottle (${input.amount}${units} ${bottleType}) for child ${cid}`,
+        writes,
+      },
+      id,
+      opts,
+    );
+  }
+
+  /**
+   * Log a growth measurement: writes a row to `health/{cid}/data` (note: the
+   * `data` subcollection, not `intervals`) and updates `prefs.lastGrowthEntry`
+   * with the same snapshot. At least one of weight/height/head is required.
+   */
+  async logGrowth(
+    cid: string,
+    input: LogGrowthInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    if (!input?.weight && !input?.height && !input?.head) {
+      throw new InvalidInputError(
+        "At least one measurement (weight, height, or head) is required.",
+      );
+    }
+    const metric = (input.units ?? "metric") === "metric";
+    const start = toSeconds(input.start ?? new Date());
+    const nowMs = Date.now();
+    const nowSec = nowMs / 1000;
+    const offset = await this.offsetMinutes();
+    const id = intervalId(nowMs);
+
+    const row: Record<string, unknown> = {
+      _id: id,
+      type: "health",
+      mode: "growth",
+      start,
+      lastUpdated: nowSec,
+      offset,
+      isNight: false,
+    };
+    if (input.weight != null) {
+      row.weight = input.weight;
+      row.weightUnits = metric ? "kg" : "lbs.oz";
+    }
+    if (input.height != null) {
+      row.height = input.height;
+      row.heightUnits = metric ? "cm" : "ft.in";
+    }
+    if (input.head != null) {
+      row.head = input.head;
+      row.headUnits = metric ? "hcm" : "hin";
+    }
+
+    const existingStart =
+      (await this.getHealth(cid))?.prefs?.lastGrowthEntry?.start ?? null;
+
+    const writes: PlannedWrite[] = [
+      { op: "set", path: `health/${cid}/data/${id}`, data: row },
+    ];
+    if (shouldUpdateLast(existingStart, start)) {
+      writes.push(this.prefUpdate(`health/${cid}`, { lastGrowthEntry: row }, nowSec));
+    }
+    return this.runPlan(
+      { description: `Log growth for child ${cid}`, writes },
+      id,
+      opts,
+    );
+  }
+
+  /**
+   * Log a pump session: writes a row to `pump/{cid}/intervals` and updates
+   * `prefs.lastPump` unless newer. A `totalAmount` is split evenly across
+   * `leftAmount`/`rightAmount`; otherwise both side amounts are required.
+   */
+  async logPump(
+    cid: string,
+    input: LogPumpInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    if (input.duration != null && input.duration < 0) {
+      throw new InvalidInputError("duration must be non-negative.");
+    }
+    const usingTotal = input.totalAmount != null;
+    if (usingTotal && (input.leftAmount != null || input.rightAmount != null)) {
+      throw new InvalidInputError(
+        "Provide either totalAmount or left/right amounts, not both.",
+      );
+    }
+    let entryMode: PumpEntryMode;
+    let left: number;
+    let right: number;
+    if (usingTotal) {
+      entryMode = "total";
+      left = right = (input.totalAmount as number) / 2;
+    } else {
+      entryMode = "leftright";
+      if (input.leftAmount == null || input.rightAmount == null) {
+        throw new InvalidInputError(
+          "leftright pump entries require both leftAmount and rightAmount.",
+        );
+      }
+      left = input.leftAmount;
+      right = input.rightAmount;
+    }
+    const units = input.units ?? "ml";
+    const start = toSeconds(input.start ?? new Date());
+    const nowMs = Date.now();
+    const nowSec = nowMs / 1000;
+    const offset = await this.offsetMinutes();
+    const hasDuration = input.duration != null;
+    const id = intervalId(nowMs);
+
+    const row: Record<string, unknown> = {
+      start,
+      entryMode,
+      leftAmount: left,
+      rightAmount: right,
+      units,
+      offset,
+      lastUpdated: nowSec,
+    };
+    if (hasDuration) {
+      row.duration = input.duration;
+      row.end_offset = offset;
+    }
+    if (input.notes) row.notes = input.notes;
+
+    const existingStart = (await this.getPump(cid))?.prefs?.lastPump?.start ?? null;
+
+    const writes: PlannedWrite[] = [
+      { op: "set", path: `pump/${cid}/intervals/${id}`, data: row },
+    ];
+    if (shouldUpdateLast(existingStart, start)) {
+      const lastPump: Record<string, unknown> = {
+        start,
+        entryMode,
+        leftAmount: left,
+        rightAmount: right,
+        units,
+        offset,
+      };
+      if (hasDuration) lastPump.duration = input.duration;
+      writes.push(this.prefUpdate(`pump/${cid}`, { lastPump }, nowSec));
+    }
+    return this.runPlan(
+      { description: `Log pump (${entryMode}) for child ${cid}`, writes },
+      id,
+      opts,
+    );
+  }
+
+  /**
+   * Log an activity: writes a row to `activities/{cid}/intervals` and updates
+   * the per-mode `prefs.last*` summary (e.g. `lastTummyTime`) unless newer.
+   */
+  async logActivity(
+    cid: string,
+    input: LogActivityInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    if (!input?.mode) throw new InvalidInputError("mode is required.");
+    if (input.duration != null && input.duration < 0) {
+      throw new InvalidInputError("duration must be non-negative.");
+    }
+    const start = toSeconds(input.start ?? new Date());
+    const nowMs = Date.now();
+    const nowSec = nowMs / 1000;
+    const offset = await this.offsetMinutes();
+    const hasDuration = input.duration != null;
+    const id = intervalId(nowMs);
+
+    const row: Record<string, unknown> = {
+      mode: input.mode,
+      start,
+      offset,
+      lastUpdated: nowSec,
+    };
+    if (hasDuration) {
+      row.duration = input.duration;
+      row.end_offset = offset;
+    }
+    if (input.notes) row.notes = input.notes;
+
+    const lastField = ACTIVITY_LAST_FIELD[input.mode];
+    const parent = (await this.fs.getDoc(`activities/${cid}`)) as {
+      prefs?: Record<string, { start?: number | null } | null | undefined>;
+    } | null;
+    const existingStart = parent?.prefs?.[lastField]?.start ?? null;
+
+    const writes: PlannedWrite[] = [
+      { op: "set", path: `activities/${cid}/intervals/${id}`, data: row },
+    ];
+    if (shouldUpdateLast(existingStart, start)) {
+      const lastActivity: Record<string, unknown> = { start, offset };
+      if (hasDuration) {
+        lastActivity.duration = input.duration;
+        lastActivity.end_offset = offset;
+      }
+      writes.push(
+        this.prefUpdate(`activities/${cid}`, { [lastField]: lastActivity }, nowSec),
+      );
+    }
+    return this.runPlan(
+      { description: `Log activity (${input.mode}) for child ${cid}`, writes },
+      id,
+      opts,
+    );
   }
 
   async getChild(cid: string): Promise<FirebaseChildDocument | null> {

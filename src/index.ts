@@ -5,7 +5,16 @@
  */
 
 export { HuckleberryClient } from "./client.js";
-export type { HuckleberryClientOptions } from "./client.js";
+export type {
+  HuckleberryClientOptions,
+  DiaperAmount,
+  LogDiaperInput,
+  LogPottyInput,
+  LogBottleInput,
+  LogGrowthInput,
+  LogPumpInput,
+  LogActivityInput,
+} from "./client.js";
 
 export {
   HuckleberryError,
@@ -63,6 +72,12 @@ export {
   sessionUuid,
   tzOffsetMinutes,
   shouldUpdateLast,
+} from "./write.js";
+export type {
+  PlannedWrite,
+  WritePlan,
+  WriteResult,
+  WriteOptions,
 } from "./write.js";
 
 export {
