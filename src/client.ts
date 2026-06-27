@@ -15,6 +15,7 @@ import {
   listIntervals,
   type FetchLike,
 } from "./firestore.js";
+import { tzOffsetMinutes } from "./write.js";
 import { FIRESTORE_BASE_URL } from "./const.js";
 import {
   ActivitiesNamespace,
@@ -58,6 +59,12 @@ export interface HuckleberryClientOptions {
    * new refresh token (Firebase rotates it on refresh).
    */
   onSession?: (session: Session) => void | Promise<void>;
+  /**
+   * IANA timezone (e.g. `"America/New_York"`) used to compute the `offset`
+   * field on written rows. When omitted, the client uses the account's
+   * `latestTimezone`, then the host environment, then UTC.
+   */
+  timezone?: string;
 }
 
 function toSeconds(d: Date | number): number {
@@ -70,6 +77,8 @@ export class HuckleberryClient {
   private readonly fs: FirestoreRest;
   private readonly onSession?: (session: Session) => void | Promise<void>;
   private refreshing: Promise<void> | null = null;
+  private readonly configuredTimezone?: string;
+  private cachedTimezone?: string;
 
   constructor(opts: HuckleberryClientOptions = {}) {
     // Bind to globalThis: on Cloudflare Workers the built-in `fetch` throws
@@ -78,6 +87,7 @@ export class HuckleberryClient {
     this.fetchImpl = opts.fetch ?? fetch.bind(globalThis);
     this.session = opts.session ?? null;
     this.onSession = opts.onSession;
+    this.configuredTimezone = opts.timezone;
     this.fs = new FirestoreRest(
       () => this.getToken(),
       this.fetchImpl,
@@ -181,6 +191,31 @@ export class HuckleberryClient {
 
   async getUser(): Promise<FirebaseUserDocument | null> {
     return (await this.fs.getDoc(`users/${this.uid}`)) as FirebaseUserDocument | null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Write support — timezone resolution (used to stamp `offset` on rows)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The IANA timezone used to compute `offset` on written rows: the configured
+   * option, else the account's `latestTimezone`, else the host environment,
+   * else UTC. Resolved once and cached.
+   */
+  async resolveTimezone(): Promise<string> {
+    if (this.configuredTimezone) return this.configuredTimezone;
+    if (this.cachedTimezone) return this.cachedTimezone;
+    const fromAccount = (await this.getUser())?.latestTimezone;
+    this.cachedTimezone =
+      fromAccount ||
+      Intl.DateTimeFormat().resolvedOptions().timeZone ||
+      "UTC";
+    return this.cachedTimezone;
+  }
+
+  /** The timezone `offset` (minutes, negative for UTC+) to stamp on a row at `date`. */
+  async offsetMinutes(date: Date = new Date()): Promise<number> {
+    return tzOffsetMinutes(await this.resolveTimezone(), date);
   }
 
   async getChild(cid: string): Promise<FirebaseChildDocument | null> {
