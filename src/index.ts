@@ -14,6 +14,10 @@ export type {
   LogGrowthInput,
   LogPumpInput,
   LogActivityInput,
+  LogSleepInput,
+  LogNursingInput,
+  LogSolidsInput,
+  SolidsFoodRef,
 } from "./client.js";
 
 export {

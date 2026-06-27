@@ -12,10 +12,12 @@
 import { refresh, signIn, type Session } from "./auth.js";
 import {
   FirestoreRest,
+  int,
   listIntervals,
   type FetchLike,
 } from "./firestore.js";
 import {
+  hexId,
   intervalId,
   shouldUpdateLast,
   tzOffsetMinutes,
@@ -41,10 +43,13 @@ import type {
   ActivityMode,
   BottleType,
   DiaperMode,
+  FeedSide,
   PooColor,
   PooConsistency,
   PottyResult,
   PumpEntryMode,
+  SolidsFoodSource,
+  SolidsReaction,
   VolumeUnits,
   FirebaseActivityIntervalData,
   FirebaseChildDocument,
@@ -157,6 +162,43 @@ export interface LogActivityInput {
   start?: Date | number;
   duration?: number;
   notes?: string;
+}
+
+/** Input for {@link HuckleberryClient.logSleep} (a completed past sleep, no live timer). */
+export interface LogSleepInput {
+  start: Date | number;
+  end: Date | number;
+  /** Optional sleep details, written verbatim onto the interval row. */
+  details?: Record<string, unknown>;
+}
+
+/** Input for {@link HuckleberryClient.logNursing} (a completed past nursing session). */
+export interface LogNursingInput {
+  start: Date | number;
+  end: Date | number;
+  /** Side nursed; defaults to `"left"`. Used to split the duration when no per-side durations are given. */
+  side?: FeedSide;
+  /** Explicit per-side durations (seconds). Provide both or neither. */
+  leftDuration?: number;
+  rightDuration?: number;
+}
+
+/** A reference to an existing curated/custom food, for {@link HuckleberryClient.logSolids}. */
+export interface SolidsFoodRef {
+  id: string;
+  source: SolidsFoodSource;
+  name: string;
+  amount?: string | number;
+}
+
+/** Input for {@link HuckleberryClient.logSolids}. */
+export interface LogSolidsInput {
+  foods: SolidsFoodRef[];
+  start?: Date | number;
+  notes?: string;
+  reaction?: SolidsReaction;
+  /** Firebase Storage image filename for the meal note. */
+  foodNoteImage?: string;
 }
 
 /** Maps an activity mode to its `prefs.last*` summary field. */
@@ -712,6 +754,216 @@ export class HuckleberryClient {
     }
     return this.runPlan(
       { description: `Log activity (${input.mode}) for child ${cid}`, writes },
+      id,
+      opts,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Completed-event logs for the timer-based trackers (sleep / nursing) and
+  // solids. These write a finished interval directly, without the live timer.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Log a completed sleep interval (no live timer): writes a row to
+   * `sleep/{cid}/intervals` and updates `prefs.lastSleep` unless newer. `start`
+   * and `duration` are stored as integers, matching the app.
+   */
+  async logSleep(
+    cid: string,
+    input: LogSleepInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    const startSec = Math.trunc(toSeconds(input.start));
+    const endSec = Math.trunc(toSeconds(input.end));
+    if (endSec < startSec) {
+      throw new InvalidInputError("end must be at or after start.");
+    }
+    const durationSec = endSec - startSec;
+    const nowMs = Date.now();
+    const nowSec = nowMs / 1000;
+    const offset = await this.offsetMinutes();
+    const id = hexId(16); // sleep intervals use a 16-hex id (no timestamp prefix)
+
+    const row: Record<string, unknown> = {
+      start: int(startSec),
+      duration: int(durationSec),
+      offset,
+      end_offset: offset,
+      lastUpdated: nowSec,
+    };
+    if (input.details) row.details = input.details;
+
+    const existingStart = (await this.getSleep(cid))?.prefs?.lastSleep?.start ?? null;
+    const writes: PlannedWrite[] = [
+      { op: "set", path: `sleep/${cid}/intervals/${id}`, data: row },
+    ];
+    if (shouldUpdateLast(existingStart, startSec)) {
+      writes.push(
+        this.prefUpdate(
+          `sleep/${cid}`,
+          { lastSleep: { start: int(startSec), duration: int(durationSec), offset } },
+          nowSec,
+        ),
+      );
+    }
+    return this.runPlan(
+      { description: `Log sleep for child ${cid}`, writes },
+      id,
+      opts,
+    );
+  }
+
+  /**
+   * Log a completed nursing session (no live timer): writes a row to
+   * `feed/{cid}/intervals` and updates `prefs.lastNursing` + `prefs.lastSide`
+   * unless newer. With no per-side durations, the whole span is attributed to
+   * `side`; otherwise provide both `leftDuration` and `rightDuration`.
+   */
+  async logNursing(
+    cid: string,
+    input: LogNursingInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    const start = toSeconds(input.start);
+    const end = toSeconds(input.end);
+    if (end < start) {
+      throw new InvalidInputError("end must be at or after start.");
+    }
+    const side = input.side ?? "left";
+    const leftGiven = input.leftDuration != null;
+    const rightGiven = input.rightDuration != null;
+    if (leftGiven !== rightGiven) {
+      throw new InvalidInputError(
+        "Provide both leftDuration and rightDuration together.",
+      );
+    }
+    let left: number;
+    let right: number;
+    let total: number;
+    if (!leftGiven && !rightGiven) {
+      total = end - start;
+      left = side === "left" ? total : 0;
+      right = side === "right" ? total : 0;
+    } else {
+      left = input.leftDuration as number;
+      right = input.rightDuration as number;
+      if (left < 0 || right < 0) {
+        throw new InvalidInputError(
+          "leftDuration and rightDuration must be non-negative.",
+        );
+      }
+      total = left + right;
+    }
+    const nowMs = Date.now();
+    const nowSec = nowMs / 1000;
+    const offset = await this.offsetMinutes();
+    const id = intervalId(nowMs);
+
+    const row = {
+      mode: "breast",
+      start,
+      lastSide: side,
+      lastUpdated: nowSec,
+      leftDuration: left,
+      rightDuration: right,
+      offset,
+      end_offset: offset,
+    };
+    const existingStart =
+      (await this.getFeed(cid))?.prefs?.lastNursing?.start ?? null;
+
+    const writes: PlannedWrite[] = [
+      { op: "set", path: `feed/${cid}/intervals/${id}`, data: row },
+    ];
+    if (shouldUpdateLast(existingStart, start)) {
+      writes.push(
+        this.prefUpdate(
+          `feed/${cid}`,
+          {
+            lastNursing: {
+              mode: "breast",
+              start,
+              duration: total,
+              leftDuration: left,
+              rightDuration: right,
+              offset,
+            },
+            lastSide: { start, lastSide: side },
+          },
+          nowSec,
+        ),
+      );
+    }
+    return this.runPlan(
+      { description: `Log nursing for child ${cid}`, writes },
+      id,
+      opts,
+    );
+  }
+
+  /**
+   * Log a solid-food meal: writes a row to `feed/{cid}/intervals` (keyed by
+   * each food's id) and updates `prefs.lastSolid` unless newer.
+   */
+  async logSolids(
+    cid: string,
+    input: LogSolidsInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    if (!input?.foods?.length) {
+      throw new InvalidInputError("At least one food is required.");
+    }
+    const start = toSeconds(input.start ?? new Date());
+    const nowMs = Date.now();
+    const nowSec = nowMs / 1000;
+    const offset = await this.offsetMinutes();
+    const id = intervalId(nowMs);
+
+    const foods: Record<string, unknown> = {};
+    for (const f of input.foods) {
+      const name = (f.name ?? "").trim();
+      if (!name) throw new InvalidInputError("Food name must be non-empty.");
+      foods[f.id] = {
+        id: f.id,
+        source: f.source,
+        created_name: name,
+        amount: f.amount,
+      };
+    }
+
+    const row: Record<string, unknown> = {
+      mode: "solids",
+      start,
+      lastUpdated: nowSec,
+      offset,
+      foods,
+    };
+    if (input.notes) row.notes = input.notes;
+    if (input.reaction) row.reactions = { [input.reaction]: true };
+    if (input.foodNoteImage) row.foodNoteImage = input.foodNoteImage;
+
+    const existingStart = (await this.getFeed(cid))?.prefs?.lastSolid?.start ?? null;
+    const writes: PlannedWrite[] = [
+      { op: "set", path: `feed/${cid}/intervals/${id}`, data: row },
+    ];
+    if (shouldUpdateLast(existingStart, start)) {
+      const lastSolid: Record<string, unknown> = {
+        mode: "solids",
+        start,
+        foods,
+        offset,
+      };
+      if (input.reaction) lastSolid.reactions = { [input.reaction]: true };
+      if (input.notes) lastSolid.notes = input.notes;
+      writes.push(this.prefUpdate(`feed/${cid}`, { lastSolid }, nowSec));
+    }
+    const n = input.foods.length;
+    return this.runPlan(
+      { description: `Log solids (${n} food${n === 1 ? "" : "s"}) for child ${cid}`, writes },
       id,
       opts,
     );

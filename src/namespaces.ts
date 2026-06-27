@@ -18,8 +18,11 @@ import type {
   LogBottleInput,
   LogDiaperInput,
   LogGrowthInput,
+  LogNursingInput,
   LogPottyInput,
   LogPumpInput,
+  LogSleepInput,
+  LogSolidsInput,
 } from "./client.js";
 import { InvalidDateRangeError } from "./errors.js";
 import type { WriteOptions, WriteResult } from "./write.js";
@@ -103,6 +106,15 @@ export class SleepNamespace {
     const { start, end } = validateRange(range);
     return this.c.listSleepIntervals(cid, start, end);
   }
+
+  /** Log a completed sleep interval (writes a row + updates `prefs.lastSleep`). */
+  log(
+    cid: string,
+    input: LogSleepInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    return this.c.logSleep(cid, input, opts);
+  }
 }
 
 export class FeedNamespace {
@@ -124,6 +136,24 @@ export class FeedNamespace {
     opts?: WriteOptions,
   ): Promise<WriteResult> {
     return this.c.logBottle(cid, input, opts);
+  }
+
+  /** Log a completed nursing session (writes a row + updates `prefs.lastNursing`/`lastSide`). */
+  logNursing(
+    cid: string,
+    input: LogNursingInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    return this.c.logNursing(cid, input, opts);
+  }
+
+  /** Log a solid-food meal (writes a row + updates `prefs.lastSolid`). */
+  logSolids(
+    cid: string,
+    input: LogSolidsInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    return this.c.logSolids(cid, input, opts);
   }
 }
 

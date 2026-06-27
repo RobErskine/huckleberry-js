@@ -270,3 +270,102 @@ describe("logActivity", () => {
     );
   });
 });
+
+describe("logSleep", () => {
+  it("writes start/duration as integers with a 16-hex interval id", async () => {
+    const { client, calls } = makeClient({ parent: null });
+    const res = await client.logSleep("c1", { start: 1000, end: 4600 });
+
+    expect(res.id).toMatch(/^[0-9a-f]{16}$/);
+    const writes = writesOf(calls);
+    expect(writes[0].url).toBe(`https://fs.test/sleep/c1/intervals/${res.id}`);
+    const row = fields(writes[0]);
+    expect(row.start).toEqual({ integerValue: "1000" });
+    expect(row.duration).toEqual({ integerValue: "3600" });
+    expect(row.offset).toEqual({ doubleValue: 0 });
+
+    const last = fields(writes[1]).prefs.mapValue.fields.lastSleep.mapValue.fields;
+    expect(last.start).toEqual({ integerValue: "1000" });
+    expect(last.duration).toEqual({ integerValue: "3600" });
+  });
+
+  it("rejects end before start", async () => {
+    const { client } = makeClient({ parent: null });
+    await expect(
+      client.logSleep("c1", { start: 5000, end: 1000 }),
+    ).rejects.toThrow(/end must be at or after start/);
+  });
+});
+
+describe("logNursing", () => {
+  it("attributes the whole span to the given side when no per-side durations", async () => {
+    const { client, calls } = makeClient({ parent: null });
+    await client.logNursing("c1", { start: 1000, end: 1300, side: "right" });
+
+    const row = fields(writesOf(calls)[0]);
+    expect(row.mode).toEqual({ stringValue: "breast" });
+    expect(row.lastSide).toEqual({ stringValue: "right" });
+    expect(row.leftDuration).toEqual({ doubleValue: 0 });
+    expect(row.rightDuration).toEqual({ doubleValue: 300 });
+
+    const prefs = fields(writesOf(calls)[1]).prefs.mapValue.fields;
+    expect(prefs.lastNursing.mapValue.fields.duration).toEqual({ doubleValue: 300 });
+    expect(prefs.lastSide.mapValue.fields.lastSide).toEqual({ stringValue: "right" });
+  });
+
+  it("uses explicit per-side durations and sums them", async () => {
+    const { client, calls } = makeClient({ parent: null });
+    await client.logNursing("c1", {
+      start: 1000,
+      end: 1500,
+      leftDuration: 120,
+      rightDuration: 180,
+    });
+    const prefs = fields(writesOf(calls)[1]).prefs.mapValue.fields;
+    expect(prefs.lastNursing.mapValue.fields.duration).toEqual({ doubleValue: 300 });
+  });
+
+  it("rejects providing only one side duration", async () => {
+    const { client } = makeClient({ parent: null });
+    await expect(
+      client.logNursing("c1", { start: 1, end: 2, leftDuration: 100 }),
+    ).rejects.toThrow(/both leftDuration and rightDuration/);
+  });
+});
+
+describe("logSolids", () => {
+  it("keys foods by id with created_name and updates prefs.lastSolid", async () => {
+    const { client, calls } = makeClient({ parent: null });
+    await client.logSolids("c1", {
+      start: 1000,
+      foods: [
+        { id: "f1", source: "curated", name: "Banana", amount: "2 tbsp" },
+        { id: "f2", source: "custom", name: "Oats" },
+      ],
+      reaction: "LOVED",
+      notes: "messy",
+    });
+
+    const writes = writesOf(calls);
+    const row = fields(writes[0]);
+    expect(row.mode).toEqual({ stringValue: "solids" });
+    const foods = row.foods.mapValue.fields;
+    expect(foods.f1.mapValue.fields.created_name).toEqual({ stringValue: "Banana" });
+    expect(foods.f1.mapValue.fields.amount).toEqual({ stringValue: "2 tbsp" });
+    expect(foods.f2.mapValue.fields.amount).toBeUndefined();
+    expect(row.reactions.mapValue.fields.LOVED).toEqual({ booleanValue: true });
+    expect(row.notes).toEqual({ stringValue: "messy" });
+
+    const url = new URL(writes[1].url);
+    expect(url.searchParams.getAll("updateMask.fieldPaths")[0]).toBe(
+      "prefs.lastSolid",
+    );
+  });
+
+  it("rejects an empty foods list", async () => {
+    const { client } = makeClient({ parent: null });
+    await expect(client.logSolids("c1", { foods: [] })).rejects.toThrow(
+      /At least one food/,
+    );
+  });
+});
