@@ -7,7 +7,7 @@ transports — pick the one that matches where you want it to run.
 
 | | **Local (stdio)** | **Remote (Cloudflare Workers)** |
 | --- | --- | --- |
-| Runs on | Your machine, Node 18+ | The edge, always-on |
+| Runs on | Your machine, Node 20+ | The edge, always-on |
 | Entry | `huckleberry-mcp` bin | `huckleberry-js/mcp/worker` |
 | Needs the MCP SDK | Yes (optional peer dep) | No (zero extra deps) |
 | Credentials live in | Your local MCP config | Worker secrets |

@@ -2,7 +2,7 @@
  * HuckleberryClient — read-only (v1) client for the Huckleberry baby tracker.
  *
  * Framework-agnostic: uses the global `fetch`, so it runs on Cloudflare
- * Workers, Node 18+, and modern browsers. Authentication mints a Firebase ID
+ * Workers, Node 20+, and modern browsers. Authentication mints a Firebase ID
  * token; all reads go through Firestore's REST API (see `firestore.ts`).
  *
  * Writes (start/log sleep, nursing, bottle, diaper, pump, growth, …) are not

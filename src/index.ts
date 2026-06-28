@@ -1,6 +1,6 @@
 /**
  * huckleberry-js — read-only TypeScript client for the Huckleberry baby
- * tracking app's Firebase backend. Runs on Cloudflare Workers, Node 18+, and
+ * tracking app's Firebase backend. Runs on Cloudflare Workers, Node 20+, and
  * browsers (uses global `fetch`, no Node-only dependencies).
  */
 

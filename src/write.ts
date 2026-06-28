@@ -1,7 +1,7 @@
 /**
  * Pure helpers shared by the write methods: id generation, timezone offset, and
  * the "newest wins" guard for `prefs.last*` updates. Dependency-free and runnable
- * on Cloudflare Workers, Node 18+, and browsers (global `crypto`, `Intl`, `Date`).
+ * on Cloudflare Workers, Node 20+, and browsers (global `crypto`, `Intl`, `Date`).
  */
 
 const HEX = "0123456789abcdef";

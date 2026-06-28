@@ -2,7 +2,7 @@
 
 Unofficial TypeScript client (**read + write**) for the [Huckleberry](https://huckleberrycare.com/)
 baby-tracking app's Firebase backend. A `fetch`-based client that runs anywhere
-modern JS does — **Cloudflare Workers**, **Node 18+**, and **browsers** — with
+modern JS does — **Cloudflare Workers**, **Node 20+**, and **browsers** — with
 **zero runtime dependencies** and first-class types.
 
 [![npm](https://img.shields.io/npm/v/huckleberry-js.svg)](https://www.npmjs.com/package/huckleberry-js)

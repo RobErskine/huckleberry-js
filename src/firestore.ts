@@ -1,5 +1,5 @@
 /**
- * Minimal Firestore REST client (works on Cloudflare Workers, Node 18+, browsers).
+ * Minimal Firestore REST client (works on Cloudflare Workers, Node 20+, browsers).
  *
  * The Python client used the gRPC Firestore SDK, which cannot run on Workers.
  * Firestore's REST API accepts the same Firebase ID token and enforces the same
