@@ -1,6 +1,6 @@
 # huckleberry-js
 
-Unofficial, read-only TypeScript client for the [Huckleberry](https://huckleberrycare.com/)
+Unofficial TypeScript client (**read + write**) for the [Huckleberry](https://huckleberrycare.com/)
 baby-tracking app's Firebase backend. A `fetch`-based client that runs anywhere
 modern JS does — **Cloudflare Workers**, **Node 18+**, and **browsers** — with
 **zero runtime dependencies** and first-class types.
@@ -29,8 +29,8 @@ modern JS does — **Cloudflare Workers**, **Node 18+**, and **browsers** — wi
 The Huckleberry mobile app stores data in Firebase. Official Firebase SDKs talk
 to Firestore over **gRPC**, which can't run on Cloudflare Workers. Firestore's
 **REST API** accepts the same Firebase ID token and enforces the same security
-rules, so this library reads your data over plain HTTPS `fetch` — making it
-portable to Workers, edge runtimes, Node, and the browser.
+rules, so this library reads **and writes** your data over plain HTTPS `fetch` —
+making it portable to Workers, edge runtimes, Node, and the browser.
 
 ## Install
 
@@ -106,6 +106,64 @@ await client.health.getLatestGrowth(cid);
 const summary = await client.dashboard.summary(cid);
 ```
 
+## Logging events (writes)
+
+As of **0.3.0** the client can write, not just read. Each `log*` method records
+a history row and updates the matching `prefs.last*` summary. Timestamps accept a
+`Date` or epoch **seconds**; omit `start` to use "now".
+
+```ts
+// Single-shot logs (flat or namespaced — both work)
+await client.logDiaper(cid, { mode: "pee" });
+await client.feed.logBottle(cid, { amount: 120, units: "ml" });
+await client.feed.logNursing(cid, { start, end, side: "left" });
+await client.sleep.log(cid, { start, end });
+await client.pump.log(cid, { totalAmount: 80, units: "ml" });
+await client.health.logGrowth(cid, { weight: 7.4, units: "metric" });
+await client.activities.log(cid, { mode: "bath" });
+
+// Solids: look up food IDs first, then log
+const foods = await client.feed.foods.listCurated();
+await client.feed.logSolids(cid, {
+  foods: [{ id: foods[0].id, source: "curated", name: foods[0].name }],
+  reaction: "LOVED",
+});
+```
+
+### Live timers
+
+Sleep and nursing have full timer state machines that read-modify-write the
+parent doc's `timer` map. `complete*` writes the finished interval and clears the
+timer; `cancel*` clears it without saving.
+
+```ts
+await client.sleep.start(cid);     // start a nap timer
+await client.sleep.pause(cid);
+await client.sleep.resume(cid);
+await client.sleep.complete(cid);  // saves the interval + clears the timer
+
+await client.feed.startNursing(cid, { side: "left" });
+await client.feed.switchNursingSide(cid);
+await client.feed.completeNursing(cid);
+```
+
+### Preview before committing (`dryRun`)
+
+Every write accepts `{ dryRun: true }` and returns a `WriteResult`
+(`{ dryRun, id?, plan }`). With `dryRun` it performs any necessary reads, builds
+the planned Firestore writes, and returns them **without committing** — handy for
+tests and confirmation flows.
+
+```ts
+const preview = await client.logDiaper(cid, { mode: "poo" }, { dryRun: true });
+console.log(preview.plan); // the PATCH operations that *would* run
+```
+
+> **Heads-up:** writes hit your real Huckleberry account. There's no document
+> delete in this library by design (Huckleberry has no hard/soft delete for
+> tracker events); the only reversible removal is the `archived` toggle on custom
+> solids foods via `client.feed.foods.setArchived(...)`.
+
 ### Errors
 
 Every error extends `HuckleberryError` and carries machine-readable fields —
@@ -150,7 +208,9 @@ export default {
 };
 ```
 
-## API (v1, read-only)
+## API
+
+### Read
 
 | Method | Returns |
 | --- | --- |
@@ -161,6 +221,23 @@ export default {
 | `getSleep/getFeed/getDiaper/getPump/getHealth(cid)` | tracker parent doc (active timer + `prefs.last*`) |
 | `listSleepIntervals/listFeedIntervals/listDiaperIntervals/listPumpIntervals/listActivityIntervals(cid, start, end)` | history rows (handles `multi` batches) |
 | `getDashboardSummary(cid, name?)` | `DashboardSummary` rollup |
+| `listSolidsCuratedFoods()` / `listSolidsCustomFoods(cid, opts?)` | solids food catalog |
+
+### Write (0.3.0+)
+
+All accept an optional final `{ dryRun?: boolean }` and return a `WriteResult`.
+
+| Method | Writes |
+| --- | --- |
+| `logDiaper / logPotty(cid, input, opts?)` | a diaper/potty row + `prefs.lastDiaper`/`lastPotty` |
+| `logBottle / logNursing / logSolids(cid, input, opts?)` | a feed row + the matching `prefs.last*` |
+| `logSleep(cid, input, opts?)` | a sleep interval + `prefs.lastSleep` |
+| `logPump(cid, input, opts?)` | a pump row + `prefs.lastPump` |
+| `logGrowth(cid, input, opts?)` | a growth measurement + `prefs.lastGrowthEntry` |
+| `logActivity(cid, input, opts?)` | an activity row + the per-mode `prefs.last*` |
+| `startSleep/pauseSleep/resumeSleep/cancelSleep/completeSleep(cid, …)` | sleep timer transitions |
+| `startNursing/pauseNursing/resumeNursing/switchNursingSide/cancelNursing/completeNursing(cid, …)` | nursing timer transitions |
+| `createSolidsCustomFood / setCustomFoodArchived(cid, …)` | custom solids food CRUD + archive toggle |
 
 Lower-level Firestore REST helpers (`FirestoreRest`, `decodeValue`,
 `buildStartRangeQuery`, …) and all Firebase types are also exported from the
@@ -168,7 +245,8 @@ package root if you need to go beyond the high-level client.
 
 ## MCP server
 
-Expose your Huckleberry data to Claude (and any MCP client) as read-only tools.
+Expose your Huckleberry data to Claude (and any MCP client) as typed tools — so
+you can log a diaper, start a nap timer, or pull a summary in plain English.
 Two transports ship with the package:
 
 - **Local (stdio)** — `npx -p huckleberry-js huckleberry-mcp`, runs on **Node**
@@ -176,10 +254,25 @@ Two transports ship with the package:
 - **Remote (Cloudflare Workers)** — deploy `huckleberry-js/mcp/worker` to the
   edge for an always-on, shareable endpoint. (A form Bun-only clients can't run.)
 
+**Reads are on by default; writes are gated.** Write tools (`log_*`, the timer
+tools) are **hidden and rejected** unless you set `HUCKLEBERRY_ENABLE_WRITES=1`
+in the server environment. Every write tool also accepts `dryRun: true` to
+preview before committing, and `cancel_*`/`complete_*` are flagged
+`destructiveHint` so MCP clients can prompt for confirmation.
+
+```bash
+# read-only (default)
+HUCKLEBERRY_EMAIL=… HUCKLEBERRY_PASSWORD=… npx -p huckleberry-js huckleberry-mcp
+
+# read + write
+HUCKLEBERRY_ENABLE_WRITES=1 \
+  HUCKLEBERRY_EMAIL=… HUCKLEBERRY_PASSWORD=… npx -p huckleberry-js huckleberry-mcp
+```
+
 The MCP SDK is an **optional peer dependency** — the core library stays
 zero-dependency; install `@modelcontextprotocol/sdk` only to run the stdio
-server. See **[`docs/mcp.md`](docs/mcp.md)** for setup, config, and the
-trade-offs between the two forms.
+server. See **[`docs/mcp.md`](docs/mcp.md)** for setup, config, the full tool
+list, and the trade-offs between the two forms.
 
 ## Smoke test
 
@@ -199,7 +292,7 @@ It prints your child list and a dashboard summary.
 npm install
 npm run build       # emits dist/
 npm run typecheck
-npm test            # vitest: value decoder, query builder, multi-container expansion, auth/refresh, rollup
+npm test            # vitest: value codec, query builder, multi-container expansion, auth/refresh, rollup, write methods + timers, MCP tools
 ```
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full workflow and release steps.

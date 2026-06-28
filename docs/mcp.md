@@ -1,8 +1,8 @@
 # MCP server
 
 `huckleberry-js` ships a [Model Context Protocol](https://modelcontextprotocol.io)
-server so an LLM (Claude Desktop, etc.) can read your Huckleberry data through
-typed, **read-only** tools. The same tool registry is served over two
+server so an LLM (Claude Desktop, etc.) can read **and (optionally) write** your
+Huckleberry data through typed tools. The same tool registry is served over two
 transports — pick the one that matches where you want it to run.
 
 | | **Local (stdio)** | **Remote (Cloudflare Workers)** |
@@ -13,11 +13,44 @@ transports — pick the one that matches where you want it to run.
 | Credentials live in | Your local MCP config | Worker secrets |
 | Best for | Personal use in Claude Desktop | Sharing / hosted assistants |
 
-Both expose the same tools, all `readOnlyHint: true` / `destructiveHint: false`:
+## Tools
 
-`get_capabilities`, `get_user`, `list_children`, `get_child`, `list_sleep`,
-`list_feed`, `list_diapers`, `list_activities`, `list_pump`, `list_health`,
-`get_latest_growth`.
+### Read tools (always available, `readOnlyHint: true`)
+
+`get_capabilities`, `get_user`, `list_children`, `get_child`, `get_sleep`,
+`list_sleep`, `get_feed`, `list_feed`, `list_diapers`, `list_activities`,
+`list_pump`, `list_health`, `get_latest_growth`, `list_curated_foods`,
+`list_custom_foods`.
+
+### Write tools (gated — see below)
+
+Hidden from `tools/list` and rejected with `WritesDisabledError` unless
+`HUCKLEBERRY_ENABLE_WRITES` is set. All carry `readOnlyHint: false`; the
+`cancel_*`/`complete_*` timer tools also carry `destructiveHint: true` so clients
+can prompt for confirmation. Every write tool accepts `dryRun: true` to preview
+the planned Firestore writes without committing.
+
+- **Single-shot logs**: `log_diaper`, `log_potty`, `log_bottle`, `log_nursing`,
+  `log_sleep`, `log_solids`, `log_pump`, `log_growth`, `log_activity`.
+- **Sleep timer**: `start_sleep`, `pause_sleep`, `resume_sleep`, `cancel_sleep`,
+  `complete_sleep`.
+- **Nursing timer**: `start_nursing`, `pause_nursing`, `resume_nursing`,
+  `switch_nursing_side`, `cancel_nursing`, `complete_nursing`.
+
+### Enabling writes
+
+Set `HUCKLEBERRY_ENABLE_WRITES=1` (or `true`) in the server environment — a stdio
+env var or a Worker secret. With it **unset** the server behaves exactly like the
+read-only releases: write tools don't appear in `tools/list` and any call to one
+returns:
+
+```json
+{ "error": "WritesDisabledError", "category": "invalid_input", "retryable": false,
+  "recovery": "Ask the server operator to set HUCKLEBERRY_ENABLE_WRITES=1 and restart the server." }
+```
+
+`get_capabilities` reports the current state (`writesEnabled`, `readOnly`) and the
+visible tool list, so an LLM can discover up front whether it can write.
 
 Successful responses use a stable envelope:
 
@@ -68,6 +101,10 @@ HUCKLEBERRY_EMAIL=you@example.com HUCKLEBERRY_PASSWORD=secret \
 }
 ```
 
+To allow writes, add `"HUCKLEBERRY_ENABLE_WRITES": "1"` to that `env` block. The
+server logs `Writes: enabled.` / `Writes: disabled.` on startup (to stderr) so
+you can confirm which mode it's in.
+
 > Uses `npx`/Node — **no Bun required**. If you've installed the package into a
 > project, you can instead point `command` at the local `huckleberry-mcp` bin.
 
@@ -109,9 +146,14 @@ Set secrets (never commit them):
 ```bash
 wrangler secret put HUCKLEBERRY_EMAIL
 wrangler secret put HUCKLEBERRY_PASSWORD
-wrangler secret put MCP_AUTH_TOKEN   # optional; see "Securing" below
+wrangler secret put MCP_AUTH_TOKEN          # optional; see "Securing" below
+wrangler secret put HUCKLEBERRY_ENABLE_WRITES   # optional; set to "1" to allow writes
 wrangler deploy
 ```
+
+> Leave `HUCKLEBERRY_ENABLE_WRITES` unset for a read-only endpoint. If you enable
+> writes on a hosted Worker, make sure `MCP_AUTH_TOKEN` (or Cloudflare Access) is
+> in front of it — an unauthenticated write endpoint can mutate a child's data.
 
 Point an MCP client at the deployed URL (POST JSON-RPC). With `MCP_AUTH_TOKEN`
 set, include `Authorization: Bearer <token>` on requests.

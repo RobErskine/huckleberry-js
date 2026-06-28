@@ -28,7 +28,7 @@ import type { DateRange, SolidsFoodSource } from "../types.js";
 
 export const SERVER_NAME = "huckleberry-js";
 // Keep in sync with package.json "version".
-export const SERVER_VERSION = "0.2.0";
+export const SERVER_VERSION = "0.3.0";
 
 /** A minimal JSON Schema object (object-typed inputs only). */
 export interface JsonSchema {
