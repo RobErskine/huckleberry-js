@@ -27,7 +27,7 @@ import {
   type WriteResult,
 } from "./write.js";
 import { InvalidInputError } from "./errors.js";
-import { FIRESTORE_BASE_URL } from "./const.js";
+import { CURATED_FOODS_BUCKET, CURATED_FOODS_OBJECT, FIRESTORE_BASE_URL } from "./const.js";
 import {
   ActivitiesNamespace,
   DashboardNamespace,
@@ -53,6 +53,8 @@ import type {
   VolumeUnits,
   FirebaseActivityIntervalData,
   FirebaseChildDocument,
+  FirebaseCuratedFoodDocument,
+  FirebaseCustomFoodTypeDocument,
   FirebaseDiaperData,
   FirebaseDiaperDocumentData,
   FirebaseFeedDocumentData,
@@ -967,6 +969,110 @@ export class HuckleberryClient {
       id,
       opts,
     );
+  }
+
+  // -------------------------------------------------------------------------
+  // Solids food catalog
+  // -------------------------------------------------------------------------
+
+  /**
+   * Fetch the curated solids food database from Firebase Storage.
+   * Returns all curated foods sorted by rank (ascending, nulls last) then name.
+   */
+  async listSolidsCuratedFoods(): Promise<FirebaseCuratedFoodDocument[]> {
+    const payload = (await this.fs.storageGet(
+      CURATED_FOODS_BUCKET,
+      CURATED_FOODS_OBJECT,
+    )) as Record<string, unknown>;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      throw new InvalidInputError("Unexpected curated foods payload shape from Storage.");
+    }
+    const foods: FirebaseCuratedFoodDocument[] = [];
+    for (const entry of Object.values(payload)) {
+      if (!entry || typeof entry !== "object") continue;
+      foods.push(entry as FirebaseCuratedFoodDocument);
+    }
+    return foods.sort((a, b) => {
+      const ra = a.rank ?? Infinity;
+      const rb = b.rank ?? Infinity;
+      if (ra !== rb) return ra - rb;
+      return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+    });
+  }
+
+  /**
+   * List custom solids foods from `types/{cid}/custom`. Archived entries are
+   * excluded by default; pass `{ includeArchived: true }` to include them.
+   * Returns results sorted by `updated_at` descending (newest first).
+   */
+  async listSolidsCustomFoods(
+    cid: string,
+    opts?: { includeArchived?: boolean },
+  ): Promise<FirebaseCustomFoodTypeDocument[]> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    const q = {
+      from: [{ collectionId: "custom" }],
+      where: {
+        fieldFilter: {
+          field: { fieldPath: "type" },
+          op: "EQUAL",
+          value: { stringValue: "solids" },
+        },
+      },
+    };
+    const raw = await this.fs.runQuery(`types/${cid}`, q);
+    let items = raw as unknown as FirebaseCustomFoodTypeDocument[];
+    if (!opts?.includeArchived) {
+      items = items.filter((item) => !item.archived);
+    }
+    return items.sort((a, b) => (b.updated_at > a.updated_at ? 1 : -1));
+  }
+
+  /**
+   * Create a custom solids food in `types/{cid}/custom/{foodId}`. Also ensures
+   * `types/{cid}.available_types.solids = true`. Returns the created document.
+   */
+  async createSolidsCustomFood(
+    cid: string,
+    name: string,
+    image?: string,
+  ): Promise<FirebaseCustomFoodTypeDocument> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    const foodName = (name ?? "").trim();
+    if (!foodName) throw new InvalidInputError("Custom food name must be non-empty.");
+    const foodId = crypto.randomUUID();
+    const nowIso = new Date().toISOString();
+    const doc: FirebaseCustomFoodTypeDocument = {
+      created_at: nowIso,
+      updated_at: nowIso,
+      name: foodName,
+      archived: false,
+      id: foodId,
+      type: "solids",
+      image: image ?? "",
+      source: "custom",
+    };
+    await this.fs.updateFields(`types/${cid}`, { "available_types.solids": true });
+    await this.fs.setDoc(`types/${cid}/custom/${foodId}`, doc as unknown as Record<string, unknown>);
+    return doc;
+  }
+
+  /**
+   * Toggle the `archived` flag on a custom solids food (the only reversible
+   * soft-delete in the model). Also stamps `updated_at` with the current time.
+   */
+  async setCustomFoodArchived(
+    cid: string,
+    foodId: string,
+    archived: boolean,
+  ): Promise<void> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    if (!foodId) throw new InvalidInputError("foodId is required.");
+    const nowIso = new Date().toISOString();
+    await this.fs.updateFields(`types/${cid}/custom/${foodId}`, {
+      archived,
+      updated_at: nowIso,
+    });
   }
 
   async getChild(cid: string): Promise<FirebaseChildDocument | null> {

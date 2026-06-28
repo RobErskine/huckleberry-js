@@ -37,6 +37,7 @@ export {
   UserNamespace,
   SleepNamespace,
   FeedNamespace,
+  SolidsFoodsNamespace,
   DiapersNamespace,
   PumpNamespace,
   HealthNamespace,
@@ -88,6 +89,8 @@ export {
   FIREBASE_API_KEY,
   FIREBASE_PROJECT_ID,
   FIREBASE_APP_ID,
+  CURATED_FOODS_BUCKET,
+  CURATED_FOODS_OBJECT,
 } from "./const.js";
 
 export * from "./types.js";

@@ -30,6 +30,8 @@ import type {
   DateRange,
   FirebaseActivityIntervalData,
   FirebaseChildDocument,
+  FirebaseCuratedFoodDocument,
+  FirebaseCustomFoodTypeDocument,
   FirebaseDiaperData,
   FirebaseDiaperDocumentData,
   FirebaseFeedDocumentData,
@@ -117,8 +119,42 @@ export class SleepNamespace {
   }
 }
 
+/** Solids food catalog accessors (`listCurated`, `listCustom`, `createCustom`, `setArchived`). */
+export class SolidsFoodsNamespace {
+  constructor(private readonly c: HuckleberryClient) {}
+
+  /** Curated foods from Firebase Storage, sorted by rank then name. */
+  listCurated(): Promise<FirebaseCuratedFoodDocument[]> {
+    return this.c.listSolidsCuratedFoods();
+  }
+
+  /** Custom foods for a child. Archived excluded by default. Sorted by `updated_at` desc. */
+  listCustom(
+    cid: string,
+    opts?: { includeArchived?: boolean },
+  ): Promise<FirebaseCustomFoodTypeDocument[]> {
+    return this.c.listSolidsCustomFoods(cid, opts);
+  }
+
+  /** Create a custom food and enable `available_types.solids` on the types doc. */
+  createCustom(
+    cid: string,
+    name: string,
+    image?: string,
+  ): Promise<FirebaseCustomFoodTypeDocument> {
+    return this.c.createSolidsCustomFood(cid, name, image);
+  }
+
+  /** Toggle the `archived` flag on a custom food (the only soft-delete in the model). */
+  setArchived(cid: string, foodId: string, archived: boolean): Promise<void> {
+    return this.c.setCustomFoodArchived(cid, foodId, archived);
+  }
+}
+
 export class FeedNamespace {
   constructor(private readonly c: HuckleberryClient) {}
+
+  private _foods?: SolidsFoodsNamespace;
 
   get(cid: string): Promise<FirebaseFeedDocumentData | null> {
     return this.c.getFeed(cid);
@@ -127,6 +163,11 @@ export class FeedNamespace {
   list(cid: string, range: DateRange): Promise<FirebaseFeedIntervalData[]> {
     const { start, end } = validateRange(range);
     return this.c.listFeedIntervals(cid, start, end);
+  }
+
+  /** Solids food catalog (`listCurated`, `listCustom`, `createCustom`, `setArchived`). */
+  get foods(): SolidsFoodsNamespace {
+    return (this._foods ??= new SolidsFoodsNamespace(this.c));
   }
 
   /** Log a bottle feed (writes a row + updates `prefs.lastBottle`). */

@@ -390,6 +390,20 @@ export class FirestoreRest {
     return this.setDoc(`${parentPath}/${collectionId}/${docId}`, data);
   }
 
+  /** GET a file from Firebase Storage (same Bearer token). Returns the parsed JSON body. */
+  async storageGet(bucket: string, object: string): Promise<unknown> {
+    const url = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(object)}?alt=media`;
+    const res = await this.fetchImpl(url, { headers: await this.authHeaders() });
+    if (!res.ok) {
+      throw new FirestoreError(
+        `Storage GET ${object} failed: HTTP ${res.status}`,
+        res.status,
+        await res.text(),
+      );
+    }
+    return res.json();
+  }
+
   /**
    * Merge-update specific field paths (= Python `ref.set(merge=True)` /
    * `ref.update(...)`). Keys may be dotted (`prefs.lastSleep`); a value of
