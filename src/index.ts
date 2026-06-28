@@ -18,6 +18,9 @@ export type {
   LogNursingInput,
   LogSolidsInput,
   SolidsFoodRef,
+  StartSleepInput,
+  StartNursingInput,
+  ResumeNursingInput,
 } from "./client.js";
 
 export {
@@ -25,6 +28,7 @@ export {
   ChildNotFoundError,
   InvalidDateRangeError,
   InvalidInputError,
+  WritesDisabledError,
   ApiError,
 } from "./errors.js";
 export type {

@@ -11,6 +11,7 @@
 
 import { refresh, signIn, type Session } from "./auth.js";
 import {
+  DELETE_FIELD,
   FirestoreRest,
   int,
   listIntervals,
@@ -201,6 +202,21 @@ export interface LogSolidsInput {
   reaction?: SolidsReaction;
   /** Firebase Storage image filename for the meal note. */
   foodNoteImage?: string;
+}
+
+/** Input for {@link HuckleberryClient.startSleep}. Optional sleep-condition details, written verbatim. */
+export interface StartSleepInput {
+  details?: Record<string, unknown>;
+}
+
+/** Input for {@link HuckleberryClient.startNursing}. Defaults to `"left"` side. */
+export interface StartNursingInput {
+  side?: FeedSide;
+}
+
+/** Input for {@link HuckleberryClient.resumeNursing}. Overrides the stored `lastSide`. */
+export interface ResumeNursingInput {
+  side?: FeedSide;
 }
 
 /** Maps an activity mode to its `prefs.last*` summary field. */
@@ -1073,6 +1089,494 @@ export class HuckleberryClient {
       archived,
       updated_at: nowIso,
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Sleep timer state machine
+  // -------------------------------------------------------------------------
+
+  /**
+   * Start a live sleep timer. Merge-sets the `timer` field on `sleep/{cid}`.
+   * No pre-read: always activates a fresh session. Pass `dryRun: true` to
+   * preview the write without committing.
+   */
+  async startSleep(
+    cid: string,
+    input?: StartSleepInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    const nowMs = Date.now();
+    const nowSec = nowMs / 1000;
+    const uuid = hexId(16);
+    const timer: Record<string, unknown> = {
+      active: true,
+      paused: false,
+      timestamp: { seconds: nowSec },
+      local_timestamp: nowSec,
+      timerStartTime: nowMs, // MILLISECONDS for sleep
+      uuid,
+    };
+    if (input?.details) timer.details = input.details;
+    const plan: WritePlan = {
+      description: `Start sleep timer for child ${cid}`,
+      writes: [{ op: "update", path: `sleep/${cid}`, data: { timer } }],
+    };
+    return this.runPlan(plan, undefined, opts);
+  }
+
+  /**
+   * Pause the live sleep timer. Reads current state first; throws
+   * `InvalidInputError` if the timer is inactive or already paused.
+   */
+  async pauseSleep(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    const current = await this.getSleep(cid);
+    const timer = current?.timer;
+    if (!timer?.active) throw new InvalidInputError("Sleep timer is not active.");
+    if (timer.paused) throw new InvalidInputError("Sleep timer is already paused.");
+    const nowMs = Date.now();
+    const nowSec = nowMs / 1000;
+    const plan: WritePlan = {
+      description: `Pause sleep timer for child ${cid}`,
+      writes: [
+        {
+          op: "update",
+          path: `sleep/${cid}`,
+          data: {
+            "timer.paused": true,
+            "timer.active": true,
+            "timer.timerEndTime": nowMs, // MILLISECONDS
+            "timer.timestamp": { seconds: nowSec },
+            "timer.local_timestamp": nowSec,
+          },
+        },
+      ],
+    };
+    return this.runPlan(plan, undefined, opts);
+  }
+
+  /**
+   * Resume a paused sleep timer. Throws if inactive or not paused.
+   * Does **not** reset `timerStartTime` — the original start is preserved.
+   */
+  async resumeSleep(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    const current = await this.getSleep(cid);
+    const timer = current?.timer;
+    if (!timer?.active) throw new InvalidInputError("Sleep timer is not active.");
+    if (!timer.paused) throw new InvalidInputError("Sleep timer is not paused.");
+    const nowSec = Date.now() / 1000;
+    const plan: WritePlan = {
+      description: `Resume sleep timer for child ${cid}`,
+      writes: [
+        {
+          op: "update",
+          path: `sleep/${cid}`,
+          data: {
+            "timer.paused": false,
+            "timer.active": true,
+            "timer.timestamp": { seconds: nowSec },
+            "timer.local_timestamp": nowSec,
+          },
+        },
+      ],
+    };
+    return this.runPlan(plan, undefined, opts);
+  }
+
+  /**
+   * Cancel the sleep timer without logging an interval. Replaces the whole
+   * `timer` map with an inactive state (preserving the session uuid).
+   */
+  async cancelSleep(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    const current = await this.getSleep(cid);
+    const timerUuid = current?.timer?.uuid ?? hexId(16);
+    const nowSec = Date.now() / 1000;
+    // Replace the whole `timer` map — omitting timerStartTime/timerEndTime/details
+    // removes them from the document (Firestore replaces the map entirely).
+    const plan: WritePlan = {
+      description: `Cancel sleep timer for child ${cid}`,
+      writes: [
+        {
+          op: "update",
+          path: `sleep/${cid}`,
+          data: {
+            timer: {
+              active: false,
+              paused: false,
+              timestamp: { seconds: nowSec },
+              uuid: timerUuid,
+              local_timestamp: nowSec,
+            },
+          },
+        },
+      ],
+    };
+    return this.runPlan(plan, undefined, opts);
+  }
+
+  /**
+   * Complete the live sleep timer: computes the duration, writes a 16-hex
+   * interval row, then resets the timer and updates `prefs.lastSleep`.
+   * If `timerStartTime` is missing, clears the timer field and returns without
+   * writing an interval.
+   */
+  async completeSleep(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    const current = await this.getSleep(cid);
+    const timer = current?.timer;
+    if (!timer?.active) throw new InvalidInputError("Sleep timer is not active.");
+
+    const timerStartMs = timer.timerStartTime;
+    if (!timerStartMs) {
+      // No start time; clear the timer field entirely (matches Python fallback).
+      const plan: WritePlan = {
+        description: `Complete sleep (missing timerStartTime) — clear timer for child ${cid}`,
+        writes: [
+          { op: "update", path: `sleep/${cid}`, data: { timer: DELETE_FIELD } },
+        ],
+      };
+      return this.runPlan(plan, undefined, opts);
+    }
+
+    const nowMs = Date.now();
+    const nowSec = nowMs / 1000;
+    const offset = await this.offsetMinutes();
+    const timerUuid = timer.uuid;
+    const id = hexId(16); // sleep intervals use a 16-hex id (no timestamp prefix)
+
+    // If paused use timerEndTime as end; otherwise use now.
+    const endMs =
+      timer.paused && timer.timerEndTime != null ? timer.timerEndTime : nowMs;
+    const startSec = Math.trunc(timerStartMs / 1000);
+    const durationSec = Math.trunc((endMs - timerStartMs) / 1000);
+
+    const row: Record<string, unknown> = {
+      start: int(startSec),
+      duration: int(durationSec),
+      offset,
+      end_offset: offset,
+      lastUpdated: nowSec,
+    };
+    if (timer.details) row.details = timer.details;
+
+    const existingStart = current?.prefs?.lastSleep?.start ?? null;
+
+    const timerUpdate: Record<string, unknown> = {
+      timer: {
+        active: false,
+        paused: false,
+        timestamp: { seconds: nowSec },
+        uuid: timerUuid,
+        local_timestamp: nowSec,
+        // timerStartTime/timerEndTime/details omitted → removed from Firestore
+      },
+    };
+    if (shouldUpdateLast(existingStart, startSec)) {
+      Object.assign(timerUpdate, {
+        "prefs.lastSleep": { start: int(startSec), duration: int(durationSec), offset },
+        "prefs.timestamp": { seconds: nowSec },
+        "prefs.local_timestamp": nowSec,
+      });
+    }
+
+    const plan: WritePlan = {
+      description: `Complete sleep timer for child ${cid}`,
+      writes: [
+        { op: "set", path: `sleep/${cid}/intervals/${id}`, data: row },
+        { op: "update", path: `sleep/${cid}`, data: timerUpdate },
+      ],
+    };
+    return this.runPlan(plan, id, opts);
+  }
+
+  // -------------------------------------------------------------------------
+  // Nursing timer state machine
+  // -------------------------------------------------------------------------
+
+  /**
+   * Start a live nursing timer. Merge-sets the `timer` field on `feed/{cid}`.
+   * Both `feedStartTime` and `timerStartTime` are set to now in **seconds**.
+   */
+  async startNursing(
+    cid: string,
+    input?: StartNursingInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    const side = input?.side ?? "left";
+    const nowSec = Date.now() / 1000;
+    const uuid = hexId(16);
+    const plan: WritePlan = {
+      description: `Start nursing timer (${side}) for child ${cid}`,
+      writes: [
+        {
+          op: "update",
+          path: `feed/${cid}`,
+          data: {
+            timer: {
+              active: true,
+              paused: false,
+              timestamp: { seconds: nowSec },
+              local_timestamp: nowSec,
+              feedStartTime: nowSec, // SECONDS for nursing
+              timerStartTime: nowSec, // SECONDS for nursing
+              uuid,
+              leftDuration: 0,
+              rightDuration: 0,
+              lastSide: "left",
+              activeSide: side,
+            },
+          },
+        },
+      ],
+    };
+    return this.runPlan(plan, undefined, opts);
+  }
+
+  /**
+   * Pause the nursing timer: banks elapsed seconds into the active side's
+   * duration, sets `activeSide` to DELETE_FIELD. Throws if inactive or paused.
+   */
+  async pauseNursing(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    const current = await this.getFeed(cid);
+    const timer = current?.timer;
+    if (!timer?.active) throw new InvalidInputError("Nursing timer is not active.");
+    if (timer.paused) throw new InvalidInputError("Nursing timer is already paused.");
+
+    const nowSec = Date.now() / 1000;
+    const timerStart = timer.timerStartTime ?? nowSec;
+    const elapsed = nowSec - timerStart;
+    const currentSide = timer.activeSide ?? timer.lastSide ?? "left";
+    let left = timer.leftDuration ?? 0;
+    let right = timer.rightDuration ?? 0;
+    if (currentSide === "left") left += elapsed;
+    else right += elapsed;
+
+    const plan: WritePlan = {
+      description: `Pause nursing timer for child ${cid}`,
+      writes: [
+        {
+          op: "update",
+          path: `feed/${cid}`,
+          data: {
+            "timer.paused": true,
+            "timer.active": true,
+            "timer.timestamp": { seconds: nowSec },
+            "timer.local_timestamp": nowSec,
+            "timer.leftDuration": left,
+            "timer.rightDuration": right,
+            "timer.lastSide": currentSide,
+            "timer.activeSide": DELETE_FIELD,
+          },
+        },
+      ],
+    };
+    return this.runPlan(plan, undefined, opts);
+  }
+
+  /**
+   * Resume the nursing timer: resets `timerStartTime` to now, sets `activeSide`
+   * to the provided side (or falls back to stored `lastSide`). Throws if
+   * inactive or not paused.
+   */
+  async resumeNursing(
+    cid: string,
+    input?: ResumeNursingInput,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    const current = await this.getFeed(cid);
+    const timer = current?.timer;
+    if (!timer?.active) throw new InvalidInputError("Nursing timer is not active.");
+    if (!timer.paused) throw new InvalidInputError("Nursing timer is not paused.");
+    const side = input?.side ?? timer.lastSide ?? "left";
+    const nowSec = Date.now() / 1000;
+    const plan: WritePlan = {
+      description: `Resume nursing timer (${side}) for child ${cid}`,
+      writes: [
+        {
+          op: "update",
+          path: `feed/${cid}`,
+          data: {
+            "timer.paused": false,
+            "timer.active": true,
+            "timer.timestamp": { seconds: nowSec },
+            "timer.local_timestamp": nowSec,
+            "timer.timerStartTime": nowSec, // SECONDS, reset on resume
+            "timer.activeSide": side,
+            "timer.lastSide": "none",
+          },
+        },
+      ],
+    };
+    return this.runPlan(plan, undefined, opts);
+  }
+
+  /**
+   * Switch the active nursing side: banks elapsed time on the current side (if
+   * not paused), flips to the opposite side, and resets `timerStartTime`.
+   */
+  async switchNursingSide(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    const current = await this.getFeed(cid);
+    const timer = current?.timer;
+    if (!timer?.active) throw new InvalidInputError("Nursing timer is not active.");
+
+    const nowSec = Date.now() / 1000;
+    const currentSide = timer.activeSide ?? timer.lastSide ?? "left";
+    const newSide: FeedSide = currentSide === "left" ? "right" : "left";
+    let left = timer.leftDuration ?? 0;
+    let right = timer.rightDuration ?? 0;
+
+    if (!timer.paused) {
+      const timerStart = timer.timerStartTime ?? nowSec;
+      const elapsed = nowSec - timerStart;
+      if (currentSide === "left") left += elapsed;
+      else right += elapsed;
+    }
+
+    const plan: WritePlan = {
+      description: `Switch nursing side (→ ${newSide}) for child ${cid}`,
+      writes: [
+        {
+          op: "update",
+          path: `feed/${cid}`,
+          data: {
+            "timer.paused": false,
+            "timer.lastSide": "none",
+            "timer.timestamp": { seconds: nowSec },
+            "timer.local_timestamp": nowSec,
+            "timer.timerStartTime": nowSec, // SECONDS
+            "timer.activeSide": newSide,
+            "timer.leftDuration": left,
+            "timer.rightDuration": right,
+          },
+        },
+      ],
+    };
+    return this.runPlan(plan, undefined, opts);
+  }
+
+  /**
+   * Cancel the nursing timer without logging an interval. Replaces the whole
+   * `timer` map with an inactive state (preserving uuid, resetting durations).
+   */
+  async cancelNursing(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    const current = await this.getFeed(cid);
+    const timerUuid = current?.timer?.uuid ?? hexId(16);
+    const nowSec = Date.now() / 1000;
+    const plan: WritePlan = {
+      description: `Cancel nursing timer for child ${cid}`,
+      writes: [
+        {
+          op: "update",
+          path: `feed/${cid}`,
+          data: {
+            timer: {
+              active: false,
+              paused: false,
+              timestamp: { seconds: nowSec },
+              uuid: timerUuid,
+              local_timestamp: nowSec,
+              leftDuration: 0,
+              rightDuration: 0,
+              lastSide: "left",
+              // feedStartTime/timerStartTime/activeSide omitted → removed from Firestore
+            },
+          },
+        },
+      ],
+    };
+    return this.runPlan(plan, undefined, opts);
+  }
+
+  /**
+   * Complete the nursing timer: banks remaining elapsed time, writes an interval
+   * row (`intervalId()` format), then clears `leftDuration`/`rightDuration`/
+   * `activeSide` via `DELETE_FIELD` and updates `prefs.lastNursing`/`lastSide`.
+   * Throws if inactive or if no `timerStartTime` is set.
+   */
+  async completeNursing(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    if (!cid) throw new InvalidInputError("cid is required.");
+    const current = await this.getFeed(cid);
+    const timer = current?.timer;
+    if (!timer?.active) throw new InvalidInputError("Nursing timer is not active.");
+    const timerStart = timer.timerStartTime;
+    if (!timerStart) throw new InvalidInputError("Nursing timer has no start time.");
+
+    const nowMs = Date.now();
+    const nowSec = nowMs / 1000;
+    const offset = await this.offsetMinutes();
+
+    let left = timer.leftDuration ?? 0;
+    let right = timer.rightDuration ?? 0;
+
+    if (!timer.paused) {
+      const elapsed = nowSec - timerStart;
+      const currentSide = timer.activeSide ?? timer.lastSide ?? "left";
+      if (currentSide === "left") left += elapsed;
+      else right += elapsed;
+    }
+
+    const total = left + right;
+    const feedStart = timer.feedStartTime ?? timerStart;
+
+    let lastSide = (timer.activeSide ?? timer.lastSide ?? "right") as FeedSide;
+    if (lastSide === "none") lastSide = right >= left ? "right" : "left";
+
+    const id = intervalId(nowMs);
+
+    const row: Record<string, unknown> = {
+      mode: "breast",
+      start: feedStart,
+      lastSide,
+      lastUpdated: nowSec,
+      leftDuration: left,
+      rightDuration: right,
+      offset,
+      end_offset: offset,
+    };
+
+    const existingStart = current?.prefs?.lastNursing?.start ?? null;
+
+    const timerUpdate: Record<string, unknown> = {
+      "timer.active": false,
+      "timer.paused": true, // stays paused=true after completion
+      "timer.timestamp": { seconds: nowSec },
+      "timer.local_timestamp": nowSec,
+      "timer.lastSide": lastSide,
+      "timer.leftDuration": DELETE_FIELD,
+      "timer.rightDuration": DELETE_FIELD,
+      "timer.activeSide": DELETE_FIELD,
+    };
+
+    if (shouldUpdateLast(existingStart, feedStart)) {
+      timerUpdate["prefs.lastNursing"] = {
+        mode: "breast",
+        start: feedStart,
+        duration: total,
+        leftDuration: left,
+        rightDuration: right,
+        offset,
+      };
+      timerUpdate["prefs.lastSide"] = { start: feedStart, lastSide };
+      timerUpdate["prefs.timestamp"] = { seconds: nowSec };
+      timerUpdate["prefs.local_timestamp"] = nowSec;
+    }
+
+    const plan: WritePlan = {
+      description: `Complete nursing timer for child ${cid}`,
+      writes: [
+        { op: "set", path: `feed/${cid}/intervals/${id}`, data: row },
+        { op: "update", path: `feed/${cid}`, data: timerUpdate },
+      ],
+    };
+    return this.runPlan(plan, id, opts);
   }
 
   async getChild(cid: string): Promise<FirebaseChildDocument | null> {

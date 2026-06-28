@@ -115,6 +115,7 @@ export interface FirebaseSleepTimerData {
   timerStartTime?: number | null;
   timerEndTime?: number | null;
   uuid: string;
+  details?: Record<string, unknown> | null;
 }
 
 export interface FirebaseSleepPrefs {

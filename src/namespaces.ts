@@ -23,6 +23,9 @@ import type {
   LogPumpInput,
   LogSleepInput,
   LogSolidsInput,
+  ResumeNursingInput,
+  StartNursingInput,
+  StartSleepInput,
 } from "./client.js";
 import { InvalidDateRangeError } from "./errors.js";
 import type { WriteOptions, WriteResult } from "./write.js";
@@ -117,6 +120,31 @@ export class SleepNamespace {
   ): Promise<WriteResult> {
     return this.c.logSleep(cid, input, opts);
   }
+
+  /** Start the live sleep timer. */
+  start(cid: string, input?: StartSleepInput, opts?: WriteOptions): Promise<WriteResult> {
+    return this.c.startSleep(cid, input, opts);
+  }
+
+  /** Pause the live sleep timer. */
+  pause(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    return this.c.pauseSleep(cid, opts);
+  }
+
+  /** Resume a paused sleep timer. */
+  resume(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    return this.c.resumeSleep(cid, opts);
+  }
+
+  /** Cancel the sleep timer without writing an interval. */
+  cancel(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    return this.c.cancelSleep(cid, opts);
+  }
+
+  /** Complete the sleep timer: write an interval row + reset timer. */
+  complete(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    return this.c.completeSleep(cid, opts);
+  }
 }
 
 /** Solids food catalog accessors (`listCurated`, `listCustom`, `createCustom`, `setArchived`). */
@@ -195,6 +223,36 @@ export class FeedNamespace {
     opts?: WriteOptions,
   ): Promise<WriteResult> {
     return this.c.logSolids(cid, input, opts);
+  }
+
+  /** Start the live nursing timer. */
+  startNursing(cid: string, input?: StartNursingInput, opts?: WriteOptions): Promise<WriteResult> {
+    return this.c.startNursing(cid, input, opts);
+  }
+
+  /** Pause the nursing timer, banking elapsed time into the active side. */
+  pauseNursing(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    return this.c.pauseNursing(cid, opts);
+  }
+
+  /** Resume the nursing timer, resetting `timerStartTime` to now. */
+  resumeNursing(cid: string, input?: ResumeNursingInput, opts?: WriteOptions): Promise<WriteResult> {
+    return this.c.resumeNursing(cid, input, opts);
+  }
+
+  /** Switch to the opposite nursing side, banking elapsed time first. */
+  switchNursingSide(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    return this.c.switchNursingSide(cid, opts);
+  }
+
+  /** Cancel the nursing timer without writing an interval. */
+  cancelNursing(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    return this.c.cancelNursing(cid, opts);
+  }
+
+  /** Complete the nursing timer: write an interval row + update prefs. */
+  completeNursing(cid: string, opts?: WriteOptions): Promise<WriteResult> {
+    return this.c.completeNursing(cid, opts);
   }
 }
 
