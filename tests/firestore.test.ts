@@ -3,8 +3,13 @@ import {
   buildMultiQuery,
   buildStartRangeQuery,
   decodeDocument,
+  decodeFields,
   decodeValue,
+  DELETE_FIELD,
+  encodeFields as encode,
+  encodeValue as encodeOne,
   FirestoreRest,
+  int,
   listIntervals,
   type FirestoreValue,
 } from "../src/firestore.js";
@@ -155,5 +160,135 @@ describe("listIntervals", () => {
 
     expect(rows.map((r) => r.start)).toEqual([110, 120, 150]);
     expect(rows.map((r) => r.mode)).toEqual(["old-in-range", "b", "a"]);
+  });
+});
+
+// --- encodeValue / encodeFields (the inverse of decodeValue) ---
+
+describe("encodeValue / encodeFields", () => {
+  it("encodes scalars; numbers default to doubleValue", () => {
+    expect(encodeOne(1.5)).toEqual({ doubleValue: 1.5 });
+    expect(encodeOne(100)).toEqual({ doubleValue: 100 });
+    expect(encodeOne("hi")).toEqual({ stringValue: "hi" });
+    expect(encodeOne(true)).toEqual({ booleanValue: true });
+  });
+
+  it("emits integerValue (a JSON string) for int()", () => {
+    expect(encodeOne(int(1700000000))).toEqual({ integerValue: "1700000000" });
+  });
+
+  it("encodes Date as epoch seconds (doubleValue)", () => {
+    expect(encodeOne(new Date(1700000000000))).toEqual({ doubleValue: 1700000000 });
+  });
+
+  it("omits null/undefined keys, but keeps null array elements", () => {
+    expect(encode({ a: 1, b: null, c: undefined })).toEqual({
+      a: { doubleValue: 1 },
+    });
+    expect(encodeOne([1, null])).toEqual({
+      arrayValue: { values: [{ doubleValue: 1 }, { nullValue: null }] },
+    });
+  });
+
+  it("round-trips nested maps and arrays back through decode", () => {
+    const obj = {
+      start: 1.5,
+      tags: ["a", "b"],
+      nested: { x: 2, y: "z" },
+      keepInt: int(7),
+    };
+    expect(decodeFields(encode(obj))).toEqual({
+      start: 1.5,
+      tags: ["a", "b"],
+      nested: { x: 2, y: "z" },
+      keepInt: 7,
+    });
+  });
+
+  it("throws on non-finite numbers and unsupported types", () => {
+    expect(() => encodeOne(NaN)).toThrow();
+    expect(() => encodeOne(Infinity)).toThrow();
+    expect(() => encodeOne(() => 1)).toThrow();
+  });
+});
+
+// --- FirestoreRest write ops: assert exact method / URL / mask / body ---
+
+function captureFetch() {
+  const calls: Array<{ url: string; method?: string; body: any }> = [];
+  const fetchImpl = (async (url: string, init?: RequestInit): Promise<Response> => {
+    calls.push({
+      url: String(url),
+      method: init?.method,
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
+    return new Response(JSON.stringify({ fields: {} }), { status: 200 });
+  }) as unknown as typeof fetch;
+  return { calls, fetchImpl };
+}
+
+describe("FirestoreRest writes", () => {
+  it("setDoc PATCHes the path with encoded fields and no updateMask", async () => {
+    const { calls, fetchImpl } = captureFetch();
+    const fs = new FirestoreRest(async () => "tok", fetchImpl, "https://fs.test");
+    await fs.setDoc("diaper/c1/intervals/abc", { mode: "pee", start: 100 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("PATCH");
+    expect(calls[0].url).toBe("https://fs.test/diaper/c1/intervals/abc");
+    expect(calls[0].body).toEqual({
+      fields: { mode: { stringValue: "pee" }, start: { doubleValue: 100 } },
+    });
+  });
+
+  it("createDoc builds the {parent}/{collection}/{id} path", async () => {
+    const { calls, fetchImpl } = captureFetch();
+    const fs = new FirestoreRest(async () => "tok", fetchImpl, "https://fs.test");
+    await fs.createDoc("diaper/c1", "intervals", "id9", { mode: "poo" });
+    expect(calls[0].url).toBe("https://fs.test/diaper/c1/intervals/id9");
+  });
+
+  it("updateFields sends dotted updateMask paths with a nested body", async () => {
+    const { calls, fetchImpl } = captureFetch();
+    const fs = new FirestoreRest(async () => "tok", fetchImpl, "https://fs.test");
+    await fs.updateFields("diaper/c1", {
+      "prefs.lastDiaper": { start: 100, mode: "pee" },
+      "prefs.local_timestamp": 100,
+    });
+    const url = new URL(calls[0].url);
+    expect(url.pathname).toBe("/diaper/c1");
+    expect(url.searchParams.getAll("updateMask.fieldPaths")).toEqual([
+      "prefs.lastDiaper",
+      "prefs.local_timestamp",
+    ]);
+    const prefs = calls[0].body.fields.prefs.mapValue.fields;
+    expect(prefs.lastDiaper.mapValue.fields).toEqual({
+      start: { doubleValue: 100 },
+      mode: { stringValue: "pee" },
+    });
+    expect(prefs.local_timestamp).toEqual({ doubleValue: 100 });
+  });
+
+  it("updateFields with DELETE_FIELD names the path in the mask but omits it from the body", async () => {
+    const { calls, fetchImpl } = captureFetch();
+    const fs = new FirestoreRest(async () => "tok", fetchImpl, "https://fs.test");
+    await fs.updateFields("feed/c1", {
+      "timer.paused": true,
+      "timer.activeSide": DELETE_FIELD,
+    });
+    const url = new URL(calls[0].url);
+    expect(url.searchParams.getAll("updateMask.fieldPaths")).toEqual([
+      "timer.paused",
+      "timer.activeSide",
+    ]);
+    const timer = calls[0].body.fields.timer.mapValue.fields;
+    expect(timer.paused).toEqual({ booleanValue: true });
+    expect(timer.activeSide).toBeUndefined();
+  });
+
+  it("throws FirestoreError on a non-2xx response", async () => {
+    const fetchImpl = (async () =>
+      new Response("denied", { status: 403 })) as unknown as typeof fetch;
+    const fs = new FirestoreRest(async () => "tok", fetchImpl, "https://fs.test");
+    await expect(fs.setDoc("x/y", { a: 1 })).rejects.toThrow();
   });
 });

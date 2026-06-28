@@ -26,7 +26,7 @@ npm run test:watch  # watch mode while developing
 ```
 
 All checks must pass before a PR is merged. CI runs `typecheck`, `test`, and
-`build` on Node 18/20/22 for every push and pull request.
+`build` on Node 20/22 for every push and pull request.
 
 ### Smoke test (optional, hits live Firebase)
 

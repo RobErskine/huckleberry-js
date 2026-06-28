@@ -115,6 +115,7 @@ export interface FirebaseSleepTimerData {
   timerStartTime?: number | null;
   timerEndTime?: number | null;
   uuid: string;
+  details?: Record<string, unknown> | null;
 }
 
 export interface FirebaseSleepPrefs {
@@ -244,6 +245,7 @@ export interface FirebaseDiaperData {
   mode: DiaperMode;
   start: number;
   offset: number;
+  lastUpdated?: number | null;
   quantity?: FirebaseDiaperQuantity | null;
   color?: PooColor | null;
   consistency?: PooConsistency | null;
@@ -343,6 +345,45 @@ export interface FirebaseActivityIntervalData {
   offset: number;
   duration?: number | null;
   notes?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// types/{cid} — solids food catalog
+// ---------------------------------------------------------------------------
+
+export interface FirebaseTypesAvailableTypes {
+  solids?: boolean | null;
+}
+
+export interface FirebaseTypesDocument {
+  available_types?: FirebaseTypesAvailableTypes | null;
+}
+
+/** types/{cid}/custom/{food_id} — a user-created solids food. */
+export interface FirebaseCustomFoodTypeDocument {
+  created_at: string;
+  updated_at: string;
+  name: string;
+  archived: boolean;
+  id: string;
+  type: "solids";
+  image: string;
+  source: "custom";
+}
+
+/** Curated food entry from Firebase Storage `foods/fooddb.json`. */
+export interface FirebaseCuratedFoodDocument {
+  id: string;
+  name: string;
+  source: "curated";
+  aka?: string[] | null;
+  is_common_allergen?: boolean | null;
+  is_high_choking_hazard?: boolean | null;
+  recommended_age_to_start?: number | null;
+  category?: Record<string, boolean> | null;
+  link_key?: string | null;
+  rank?: number | null;
+  image?: string | null;
 }
 
 // ---------------------------------------------------------------------------

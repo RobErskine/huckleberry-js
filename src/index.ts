@@ -1,16 +1,34 @@
 /**
  * huckleberry-js — read-only TypeScript client for the Huckleberry baby
- * tracking app's Firebase backend. Runs on Cloudflare Workers, Node 18+, and
+ * tracking app's Firebase backend. Runs on Cloudflare Workers, Node 20+, and
  * browsers (uses global `fetch`, no Node-only dependencies).
  */
 
 export { HuckleberryClient } from "./client.js";
-export type { HuckleberryClientOptions } from "./client.js";
+export type {
+  HuckleberryClientOptions,
+  DiaperAmount,
+  LogDiaperInput,
+  LogPottyInput,
+  LogBottleInput,
+  LogGrowthInput,
+  LogPumpInput,
+  LogActivityInput,
+  LogSleepInput,
+  LogNursingInput,
+  LogSolidsInput,
+  SolidsFoodRef,
+  StartSleepInput,
+  StartNursingInput,
+  ResumeNursingInput,
+} from "./client.js";
 
 export {
   HuckleberryError,
   ChildNotFoundError,
   InvalidDateRangeError,
+  InvalidInputError,
+  WritesDisabledError,
   ApiError,
 } from "./errors.js";
 export type {
@@ -23,6 +41,7 @@ export {
   UserNamespace,
   SleepNamespace,
   FeedNamespace,
+  SolidsFoodsNamespace,
   DiapersNamespace,
   PumpNamespace,
   HealthNamespace,
@@ -39,6 +58,11 @@ export {
   decodeValue,
   decodeFields,
   decodeDocument,
+  encodeValue,
+  encodeFields,
+  int,
+  IntValue,
+  DELETE_FIELD,
   buildStartRangeQuery,
   buildMultiQuery,
   listIntervals,
@@ -48,12 +72,29 @@ export type {
   FirestoreValue,
   FirestoreDocument,
   TokenProvider,
+  FieldUpdates,
 } from "./firestore.js";
+
+export {
+  hexId,
+  intervalId,
+  sessionUuid,
+  tzOffsetMinutes,
+  shouldUpdateLast,
+} from "./write.js";
+export type {
+  PlannedWrite,
+  WritePlan,
+  WriteResult,
+  WriteOptions,
+} from "./write.js";
 
 export {
   FIREBASE_API_KEY,
   FIREBASE_PROJECT_ID,
   FIREBASE_APP_ID,
+  CURATED_FOODS_BUCKET,
+  CURATED_FOODS_OBJECT,
 } from "./const.js";
 
 export * from "./types.js";

@@ -90,6 +90,37 @@ export class InvalidDateRangeError extends HuckleberryError {
   }
 }
 
+/** Thrown when a value passed to a write/encode operation is invalid. */
+export class InvalidInputError extends HuckleberryError {
+  constructor(
+    message: string,
+    recovery = "Check the values passed and try again.",
+  ) {
+    super(message, {
+      name: "InvalidInputError",
+      category: "invalid_input",
+      retryable: false,
+      recovery,
+    });
+  }
+}
+
+/** Thrown when a write tool is called but writes are not enabled server-side. */
+export class WritesDisabledError extends HuckleberryError {
+  constructor() {
+    super(
+      "Write tools are disabled. Set HUCKLEBERRY_ENABLE_WRITES=1 in the server environment to enable them.",
+      {
+        name: "WritesDisabledError",
+        category: "invalid_input",
+        retryable: false,
+        recovery:
+          "Ask the server operator to set HUCKLEBERRY_ENABLE_WRITES=1 and restart the server.",
+      },
+    );
+  }
+}
+
 /** Wraps an upstream Firestore/network failure surfaced to callers. */
 export class ApiError extends HuckleberryError {
   constructor(

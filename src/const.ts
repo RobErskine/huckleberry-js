@@ -22,3 +22,9 @@ export const REFRESH_URL = "https://securetoken.googleapis.com/v1/token";
  * Documents live under `{FIRESTORE_BASE_URL}/{collection}/{docId}`.
  */
 export const FIRESTORE_BASE_URL = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+
+/** Firebase Storage bucket that hosts the curated solids food database. */
+export const CURATED_FOODS_BUCKET = "simpleintervals.appspot.com";
+
+/** Storage object path for the curated solids food JSON. */
+export const CURATED_FOODS_OBJECT = "foods/fooddb.json";

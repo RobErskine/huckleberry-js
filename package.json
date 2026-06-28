@@ -1,7 +1,7 @@
 {
   "name": "huckleberry-js",
-  "version": "0.2.0",
-  "description": "Unofficial read-only TypeScript client for the Huckleberry baby-tracking app (Firebase). Runs on Cloudflare Workers, Node 18+, and browsers. Not affiliated with Huckleberry Labs.",
+  "version": "0.3.0",
+  "description": "Unofficial TypeScript client (read + write) for the Huckleberry baby-tracking app (Firebase). Runs on Cloudflare Workers, Node 20+, and browsers. Not affiliated with Huckleberry Labs.",
   "type": "module",
   "license": "MIT",
   "author": "RobErskine",
@@ -36,7 +36,7 @@
   },
   "files": ["dist", "src", "README.md", "LICENSE"],
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "publishConfig": {
     "access": "public"

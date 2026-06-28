@@ -1,5 +1,5 @@
 /**
- * Minimal Firestore REST client (works on Cloudflare Workers, Node 18+, browsers).
+ * Minimal Firestore REST client (works on Cloudflare Workers, Node 20+, browsers).
  *
  * The Python client used the gRPC Firestore SDK, which cannot run on Workers.
  * Firestore's REST API accepts the same Firebase ID token and enforces the same
@@ -11,7 +11,7 @@
  */
 
 import { FIRESTORE_BASE_URL } from "./const.js";
-import { HuckleberryError } from "./errors.js";
+import { HuckleberryError, InvalidInputError } from "./errors.js";
 
 export type FetchLike = typeof fetch;
 
@@ -95,6 +95,104 @@ export function decodeDocument(
 ): Record<string, unknown> | null {
   if (!doc || !doc.fields) return null;
   return decodeFields(doc.fields);
+}
+
+// --- Encoding: plain JS → Firestore typed JSON (the inverse of decodeValue) ---
+//
+// Mirrors the Python client's `to_firebase_dict`
+// (`model_dump(by_alias=True, exclude_none=True)`):
+//   * null/undefined fields are OMITTED (never written as nullValue);
+//   * numbers are written as `doubleValue` by default — the Python client emits
+//     floats almost everywhere (`.timestamp()`, durations, `time.time()`), which
+//     also matches how `buildStartRangeQuery` filters. Wrap a value in `int(n)`
+//     for the few fields the reference casts with `int()` (sleep start/duration).
+
+/** A number that must be written as a Firestore `integerValue`, not a double. */
+export class IntValue {
+  constructor(readonly value: number) {}
+}
+
+/** Mark a number so `encodeValue` emits an `integerValue` instead of a `doubleValue`. */
+export function int(n: number): IntValue {
+  return new IntValue(n);
+}
+
+/**
+ * Sentinel for `updateFields`: a field whose path appears in the update mask but
+ * is omitted from the body, deleting it (Firestore's `DELETE_FIELD`).
+ */
+export const DELETE_FIELD: unique symbol = Symbol("huckleberry.DELETE_FIELD");
+
+/**
+ * Convert a plain JS value to a Firestore typed value. Returns `undefined` for
+ * `null`/`undefined` so the caller omits the field entirely (matches
+ * `exclude_none`). Null *array elements* are kept as `nullValue` to preserve
+ * position.
+ */
+export function encodeValue(value: unknown): FirestoreValue | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (value instanceof IntValue) {
+    return { integerValue: String(Math.trunc(value.value)) };
+  }
+  if (typeof value === "boolean") return { booleanValue: value };
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new InvalidInputError(
+        `Cannot encode non-finite number: ${value}`,
+        "Pass a finite number (no NaN/Infinity).",
+      );
+    }
+    return { doubleValue: value };
+  }
+  if (typeof value === "string") return { stringValue: value };
+  if (value instanceof Date) return { doubleValue: value.getTime() / 1000 };
+  if (Array.isArray(value)) {
+    return {
+      arrayValue: {
+        values: value.map((el) => encodeValue(el) ?? { nullValue: null }),
+      },
+    };
+  }
+  if (typeof value === "object") {
+    return { mapValue: { fields: encodeFields(value as Record<string, unknown>) } };
+  }
+  throw new InvalidInputError(
+    `Cannot encode value of type ${typeof value}`,
+    "Write only plain JSON values, Date, or int(n).",
+  );
+}
+
+/** Convert a plain JS object to a Firestore `fields` map, omitting null/undefined keys. */
+export function encodeFields(
+  obj: Record<string, unknown>,
+): Record<string, FirestoreValue> {
+  const out: Record<string, FirestoreValue> = {};
+  for (const [key, val] of Object.entries(obj)) {
+    const enc = encodeValue(val);
+    if (enc !== undefined) out[key] = enc;
+  }
+  return out;
+}
+
+/** A set of field updates keyed by (possibly dotted) field path; `DELETE_FIELD` removes a field. */
+export type FieldUpdates = Record<string, unknown>;
+
+/** Build a nested object from a dotted path, merging into any existing branches. */
+function setNested(
+  target: Record<string, unknown>,
+  segments: string[],
+  value: unknown,
+): void {
+  let cur = target;
+  for (let i = 0; i < segments.length - 1; i++) {
+    const seg = segments[i];
+    const next = cur[seg];
+    if (typeof next !== "object" || next === null || Array.isArray(next)) {
+      cur[seg] = {};
+    }
+    cur = cur[seg] as Record<string, unknown>;
+  }
+  cur[segments[segments.length - 1]] = value;
 }
 
 /** A run-query element as returned by the `:runQuery` REST endpoint. */
@@ -234,6 +332,93 @@ export class FirestoreRest {
       if (decoded) docs.push(decoded);
     }
     return docs;
+  }
+
+  /**
+   * Low-level PATCH writer. With no `updateMask` this fully sets (creates or
+   * replaces) the document — Firestore upserts on PATCH; with an `updateMask` it
+   * merges only the listed (possibly dotted) field paths. Returns the written
+   * document decoded, or null.
+   */
+  private async patch(
+    path: string,
+    fields: Record<string, FirestoreValue>,
+    updateMask?: string[],
+  ): Promise<Record<string, unknown> | null> {
+    let url = `${this.baseUrl}/${path}`;
+    if (updateMask && updateMask.length) {
+      url +=
+        "?" +
+        updateMask
+          .map((p) => `updateMask.fieldPaths=${encodeURIComponent(p)}`)
+          .join("&");
+    }
+    const res = await this.fetchImpl(url, {
+      method: "PATCH",
+      headers: await this.authHeaders(),
+      body: JSON.stringify({ fields }),
+    });
+    if (!res.ok) {
+      throw new FirestoreError(
+        `Firestore PATCH ${path} failed: HTTP ${res.status}`,
+        res.status,
+        await res.text(),
+      );
+    }
+    const text = await res.text();
+    return text ? decodeDocument(JSON.parse(text) as FirestoreDocument) : null;
+  }
+
+  /** Create or fully replace a document (= Python `ref.set(data)`). */
+  async setDoc(
+    path: string,
+    data: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | null> {
+    return this.patch(path, encodeFields(data));
+  }
+
+  /**
+   * Create a document at `{parentPath}/{collectionId}/{docId}` with a
+   * client-generated id (Firestore upserts on PATCH).
+   */
+  async createDoc(
+    parentPath: string,
+    collectionId: string,
+    docId: string,
+    data: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | null> {
+    return this.setDoc(`${parentPath}/${collectionId}/${docId}`, data);
+  }
+
+  /** GET a file from Firebase Storage (same Bearer token). Returns the parsed JSON body. */
+  async storageGet(bucket: string, object: string): Promise<unknown> {
+    const url = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(object)}?alt=media`;
+    const res = await this.fetchImpl(url, { headers: await this.authHeaders() });
+    if (!res.ok) {
+      throw new FirestoreError(
+        `Storage GET ${object} failed: HTTP ${res.status}`,
+        res.status,
+        await res.text(),
+      );
+    }
+    return res.json();
+  }
+
+  /**
+   * Merge-update specific field paths (= Python `ref.set(merge=True)` /
+   * `ref.update(...)`). Keys may be dotted (`prefs.lastSleep`); a value of
+   * `DELETE_FIELD` removes that field. Only the named paths are touched.
+   */
+  async updateFields(path: string, updates: FieldUpdates): Promise<void> {
+    const mask: string[] = [];
+    const nested: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(updates)) {
+      mask.push(key);
+      if (value === DELETE_FIELD) continue; // in mask, omit from body → delete
+      setNested(nested, key.split("."), value);
+    }
+    if (!mask.length) return;
+    await this.patch(path, encodeFields(nested), mask);
   }
 }
 

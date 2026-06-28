@@ -28,6 +28,8 @@ export interface WorkerEnv {
   HUCKLEBERRY_PASSWORD?: string;
   /** When set, callers must send `Authorization: Bearer <this>`. */
   MCP_AUTH_TOKEN?: string;
+  /** Set to "1" or "true" to expose write tools and allow mutations. */
+  HUCKLEBERRY_ENABLE_WRITES?: string;
 }
 
 interface JsonRpcMessage {
@@ -64,6 +66,7 @@ function toolResult(payload: unknown, isError: boolean): unknown {
 async function handleMessage(
   msg: JsonRpcMessage,
   getClient: ClientFactory,
+  writesEnabled: boolean,
 ): Promise<JsonRpcResponse | null> {
   const id = msg.id ?? null;
   const reply = (result: unknown): JsonRpcResponse => ({ jsonrpc: "2.0", id, result });
@@ -86,7 +89,7 @@ async function handleMessage(
     case "ping":
       return reply({});
     case "tools/list":
-      return reply({ tools: toolList() });
+      return reply({ tools: toolList(writesEnabled) });
     case "tools/call": {
       const name = msg.params?.name;
       const args = (msg.params?.arguments as Record<string, unknown>) ?? {};
@@ -103,7 +106,7 @@ async function handleMessage(
             : { error: "AuthError", message: String(err), category: "auth", retryable: false, recovery: "" };
         return reply(toolResult(payload, true));
       }
-      const r = await runTool(client, name, args);
+      const r = await runTool(client, name, args, writesEnabled);
       return reply(toolResult(r.ok ? r.result : r.error, !r.ok));
     }
     default:
@@ -142,6 +145,9 @@ export async function handleMcpHttpRequest(
     return json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, 400);
   }
 
+  const writesEnabled =
+    env.HUCKLEBERRY_ENABLE_WRITES === "1" || env.HUCKLEBERRY_ENABLE_WRITES === "true";
+
   // One authenticated client per HTTP request, created lazily (handshake calls
   // like initialize/tools/list don't need credentials).
   let clientPromise: Promise<HuckleberryClient> | undefined;
@@ -152,11 +158,11 @@ export async function handleMcpHttpRequest(
     ));
 
   if (Array.isArray(body)) {
-    const out = await Promise.all(body.map((m) => handleMessage(m, getClient)));
+    const out = await Promise.all(body.map((m) => handleMessage(m, getClient, writesEnabled)));
     return json(out.filter((r): r is JsonRpcResponse => r !== null));
   }
 
-  const res = await handleMessage(body, getClient);
+  const res = await handleMessage(body, getClient, writesEnabled);
   if (res === null) return new Response(null, { status: 202 });
   return json(res);
 }

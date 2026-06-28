@@ -1,10 +1,17 @@
 # Roadmap: writes, updates, and future features
 
-v1 is **read-only** (a home heads-up display). This is the plan for everything
-deferred, so the next iteration is a straightforward extension rather than a
-redesign. The Python client (`py-huckleberry-api/src/huckleberry_api/api.py`)
-is the reference implementation for every behavior below — keep it around until
-write parity is reached.
+> **Status (0.3.0):** Writes have shipped. Firestore write primitives, all
+> single-shot `log*` methods, the sleep + nursing timer state machines, the
+> solids food catalog, the plan/commit (`dryRun`) split, and the gated MCP write
+> tools are all implemented and tested. This document is kept as the original
+> design reference; sections below describe what was built. See the
+> [CHANGELOG](../CHANGELOG.md) for the released surface.
+
+The original framing follows. v1 was **read-only** (a home heads-up display);
+this was the plan for everything deferred, so the next iteration was a
+straightforward extension rather than a redesign. The Python client
+(`py-huckleberry-api/src/huckleberry_api/api.py`) was the reference
+implementation for every behavior below.
 
 ## 1. Firestore write primitives (prerequisite)
 

@@ -28,6 +28,10 @@ import {
 } from "./tools.js";
 
 async function main(): Promise<void> {
+  const writesEnabled =
+    process.env.HUCKLEBERRY_ENABLE_WRITES === "1" ||
+    process.env.HUCKLEBERRY_ENABLE_WRITES === "true";
+
   const client = await createHuckleberryClient({
     email: process.env.HUCKLEBERRY_EMAIL,
     password: process.env.HUCKLEBERRY_PASSWORD,
@@ -39,12 +43,12 @@ async function main(): Promise<void> {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: toolList(),
+    tools: toolList(writesEnabled),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
-    const r = await runTool(client, name, args ?? {});
+    const r = await runTool(client, name, args ?? {}, writesEnabled);
     return {
       content: [
         { type: "text", text: JSON.stringify(r.ok ? r.result : r.error, null, 2) },
@@ -56,7 +60,9 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // stdout is reserved for the protocol; log readiness to stderr.
-  console.error(`${SERVER_NAME} MCP server v${SERVER_VERSION} ready (stdio).`);
+  console.error(
+    `${SERVER_NAME} MCP server v${SERVER_VERSION} ready (stdio). Writes: ${writesEnabled ? "enabled" : "disabled"}.`,
+  );
 }
 
 main().catch((err) => {
