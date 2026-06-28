@@ -12,13 +12,18 @@ jobs:
       id-token: write # required for npm provenance
     steps:
       - uses: actions/checkout@v4
+      # NOTE: deliberately NO `registry-url` here. When set, setup-node writes an
+      # .npmrc with `_authToken=${NODE_AUTH_TOKEN}` (defaulted to a placeholder),
+      # and npm then uses that bogus token instead of doing the OIDC trusted-
+      # publishing exchange — which fails with E404 "not authorized". npm defaults
+      # to registry.npmjs.org anyway, so OIDC engages cleanly without it.
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: https://registry.npmjs.org
           cache: npm
       # Trusted Publishing (OIDC) requires npm >= 11.5.1; Node 20 ships npm 10.x.
       - run: npm install -g npm@latest
+      - run: npm --version
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
