@@ -1,12 +1,15 @@
 /**
- * HuckleberryClient — read-only (v1) client for the Huckleberry baby tracker.
+ * HuckleberryClient — read + write client for the Huckleberry baby tracker.
  *
  * Framework-agnostic: uses the global `fetch`, so it runs on Cloudflare
  * Workers, Node 20+, and modern browsers. Authentication mints a Firebase ID
- * token; all reads go through Firestore's REST API (see `firestore.ts`).
+ * token; all I/O goes through Firestore's REST API (see `firestore.ts`).
  *
- * Writes (start/log sleep, nursing, bottle, diaper, pump, growth, …) are not
- * implemented yet — see `docs/write-roadmap.md`.
+ * Reads cover the dashboard, tracker docs, and history rows. Writes cover the
+ * single-shot `log*` methods (sleep, nursing, bottle, diaper, potty, pump,
+ * growth, solids, activity) and the sleep/nursing timer state machines
+ * (start/pause/resume/cancel/complete); every write accepts `{ dryRun }` to
+ * preview the planned Firestore mutations without committing.
  */
 
 import { refresh, signIn, type Session } from "./auth.js";
